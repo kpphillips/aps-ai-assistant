@@ -215,18 +215,45 @@ def execute_function(function_name, function_args):
         dict: The function's result
     """
     try:
+        print(f"\n[EXECUTE] Calling function: {function_name} with args: {json.dumps(function_args, indent=2)}")
+        
+        result = None
+        
         if function_name == "get_hubs":
-            return get_hubs()
+            print("[EXECUTE] Retrieving hubs from APS API...")
+            result = get_hubs()
         elif function_name == "get_projects":
-            return get_projects(function_args["hub_id"])
+            hub_id = function_args["hub_id"]
+            print(f"[EXECUTE] Retrieving projects for hub {hub_id} from APS API...")
+            result = get_projects(function_args["hub_id"])
         elif function_name == "get_items":
-            return get_items(function_args["project_id"])
+            project_id = function_args["project_id"]
+            print(f"[EXECUTE] Retrieving items for project {project_id} from APS API...")
+            result = get_items(function_args["project_id"])
         elif function_name == "get_versions":
-            return get_versions(function_args["project_id"], function_args["item_id"])
+            project_id = function_args["project_id"]
+            item_id = function_args["item_id"]
+            print(f"[EXECUTE] Retrieving versions for item {item_id} in project {project_id} from APS API...")
+            result = get_versions(function_args["project_id"], function_args["item_id"])
         else:
-            return {"error": f"Unknown function: {function_name}"}
+            error_msg = f"Unknown function: {function_name}"
+            print(f"[EXECUTE] ERROR: {error_msg}")
+            return {"error": error_msg}
+            
+        # Check for errors
+        if "error" in result:
+            print(f"[EXECUTE] ERROR: {result['error']}")
+        else:
+            count = result.get("count", 0)
+            print(f"[EXECUTE] SUCCESS: Retrieved {count} results from the API")
+            
+        return result
     except Exception as e:
-        return {"error": f"Error executing {function_name}: {str(e)}"}
+        error_msg = f"Error executing {function_name}: {str(e)}"
+        print(f"[EXECUTE] EXCEPTION: {error_msg}")
+        import traceback
+        print(traceback.format_exc())
+        return {"error": error_msg}
 
 def main():
     """

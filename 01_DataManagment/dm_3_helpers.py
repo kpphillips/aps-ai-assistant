@@ -24,9 +24,10 @@ def get_hubs():
     Returns:
         dict: Formatted hub information with just id and name
     """
+    print("\n[API] Calling get_hubs endpoint...")
     url = "https://developer.api.autodesk.com/project/v1/hubs"
     response = requests.get(url, headers=_HEADERS)
-    print(f"GET Hubs Response: {response.status_code}")
+    print(f"[API] GET Hubs Response: {response.status_code}")
     
     if response.status_code == 200:
         try:
@@ -42,17 +43,20 @@ def get_hubs():
                     }
                     formatted_hubs.append(hub_info)
                 
-                return {
+                result = {
                     'hubs': formatted_hubs,
                     'count': len(formatted_hubs)
                 }
+                print(f"[API] Successfully retrieved {len(formatted_hubs)} hubs")
+                return result
             else:
+                print("[API] Error: No hubs data found in response")
                 return {"error": "No hubs data found in response", "raw_data": data}
         except Exception as e:
-            print(f"Error parsing hub data: {str(e)}")
+            print(f"[API] Error parsing hub data: {str(e)}")
             return {"error": f"Failed to parse hub data: {str(e)}", "raw_data": response.text}
     else:
-        print(f"Error response: {response.text}")
+        print(f"[API] Error response: {response.text}")
         return {"error": f"API request failed with status code {response.status_code}"}
 
 def get_projects(hub_id: str):
@@ -65,9 +69,10 @@ def get_projects(hub_id: str):
     Returns:
         dict: Formatted project information with just id and name
     """
+    print(f"\n[API] Calling get_projects endpoint for hub {hub_id}...")
     url = f"https://developer.api.autodesk.com/project/v1/hubs/{hub_id}/projects"
     response = requests.get(url, headers=_HEADERS)
-    print(f"GET Projects Response for hub {hub_id}: {response.status_code}")
+    print(f"[API] GET Projects Response for hub {hub_id}: {response.status_code}")
     
     if response.status_code == 200:
         try:
@@ -83,18 +88,21 @@ def get_projects(hub_id: str):
                     }
                     formatted_projects.append(project_info)
                 
-                return {
+                result = {
                     'hub_id': hub_id,
                     'projects': formatted_projects,
                     'count': len(formatted_projects)
                 }
+                print(f"[API] Successfully retrieved {len(formatted_projects)} projects for hub {hub_id}")
+                return result
             else:
+                print("[API] Error: No project data found in response")
                 return {"error": "No project data found in response", "raw_data": data}
         except Exception as e:
-            print(f"Error parsing project data: {str(e)}")
+            print(f"[API] Error parsing project data: {str(e)}")
             return {"error": f"Failed to parse project data: {str(e)}", "raw_data": response.text}
     else:
-        print(f"Error response: {response.text}")
+        print(f"[API] Error response: {response.text}")
         return {"error": f"API request failed with status code {response.status_code}"}
 
 def get_items(project_id: str):
@@ -107,9 +115,10 @@ def get_items(project_id: str):
     Returns:
         dict: Formatted item information including id, name, and file type
     """
+    print(f"\n[API] Calling get_items endpoint for project {project_id}...")
     url = f"https://developer.api.autodesk.com/data/v1/projects/{project_id}/items"
     response = requests.get(url, headers=_HEADERS)
-    print(f"GET Items Response for project {project_id}: {response.status_code}")
+    print(f"[API] GET Items Response for project {project_id}: {response.status_code}")
     
     if response.status_code == 200:
         try:
@@ -142,18 +151,21 @@ def get_items(project_id: str):
                     }
                     formatted_items.append(item_info)
                 
-                return {
+                result = {
                     'project_id': project_id,
                     'items': formatted_items,
                     'count': len(formatted_items)
                 }
+                print(f"[API] Successfully retrieved {len(formatted_items)} items for project {project_id}")
+                return result
             else:
+                print("[API] Error: No item data found in response")
                 return {"error": "No item data found in response", "raw_data": data}
         except Exception as e:
-            print(f"Error parsing item data: {str(e)}")
+            print(f"[API] Error parsing item data: {str(e)}")
             return {"error": f"Failed to parse item data: {str(e)}", "raw_data": response.text}
     else:
-        print(f"Error response: {response.text}")
+        print(f"[API] Error response: {response.text}")
         return {"error": f"API request failed with status code {response.status_code}"}
 
 def get_versions(project_id: str, item_id: str):
@@ -167,9 +179,10 @@ def get_versions(project_id: str, item_id: str):
     Returns:
         dict: Formatted version information with relevant details
     """
+    print(f"\n[API] Calling get_versions endpoint for project {project_id}, item {item_id}...")
     url = f"https://developer.api.autodesk.com/data/v1/projects/{project_id}/items/{item_id}/versions"
     response = requests.get(url, headers=_HEADERS)
-    print(f"GET Versions Response for project {project_id}, item {item_id}: {response.status_code}")
+    print(f"[API] GET Versions Response for project {project_id}, item {item_id}: {response.status_code}")
     
     if response.status_code == 200:
         try:
@@ -205,19 +218,22 @@ def get_versions(project_id: str, item_id: str):
                 # Sort versions by version number (descending)
                 formatted_versions.sort(key=lambda x: x['version_number'], reverse=True)
                 
-                return {
+                result = {
                     'project_id': project_id,
                     'item_id': item_id,
                     'versions': formatted_versions,
                     'count': len(formatted_versions)
                 }
+                print(f"[API] Successfully retrieved {len(formatted_versions)} versions for item {item_id}")
+                return result
             else:
+                print("[API] Error: No version data found in response")
                 return {"error": "No version data found in response", "raw_data": data}
         except Exception as e:
-            print(f"Error parsing version data: {str(e)}")
+            print(f"[API] Error parsing version data: {str(e)}")
             return {"error": f"Failed to parse version data: {str(e)}", "raw_data": response.text}
     else:
-        print(f"Error response: {response.text}")
+        print(f"[API] Error response: {response.text}")
         return {"error": f"API request failed with status code {response.status_code}"}
 
 def format_file_size(size_in_bytes):

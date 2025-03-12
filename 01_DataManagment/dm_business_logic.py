@@ -407,47 +407,62 @@ class AIAssistant:
         """
         # Initialize chat history if None
         if chat_history is None:
+            print("[AI] Initializing new chat history with system prompt")
             chat_history = [
                 {"role": "system", "content": self.system_prompt}
             ]
         
         # Add user message to history
+        print(f"[AI] Processing user query: '{user_input}'")
         chat_history.append({"role": "user", "content": user_input})
         
         # Get model response with function calling enabled
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=chat_history,
-            tools=self.tools,
-            **self.config
-        )
-        
-        # Get the assistant's message
-        assistant_message = response.choices[0].message
-        
-        # Add the assistant's message to chat history
-        chat_history.append(assistant_message)
-        
-        # Initialize function_calls as None
-        function_calls = None
-        
-        # Check if the assistant wants to call a function
-        if assistant_message.tool_calls:
-            function_calls = []
+        print("[AI] Sending query to OpenAI with function calling enabled")
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=chat_history,
+                tools=self.tools,
+                **self.config
+            )
             
-            # Process each tool call
-            for tool_call in assistant_message.tool_calls:
-                function_name = tool_call.function.name
-                function_args = json.loads(tool_call.function.arguments)
+            # Get the assistant's message
+            assistant_message = response.choices[0].message
+            
+            # Add the assistant's message to chat history
+            chat_history.append(assistant_message)
+            
+            # Initialize function_calls as None
+            function_calls = None
+            
+            # Check if the assistant wants to call a function
+            if assistant_message.tool_calls:
+                print(f"[AI] The assistant wants to call {len(assistant_message.tool_calls)} function(s)")
+                function_calls = []
                 
-                # Add to function calls list
-                function_calls.append({
-                    'id': tool_call.id,
-                    'name': function_name,
-                    'args': function_args
-                })
-        
-        return assistant_message.content, chat_history, function_calls
+                # Process each tool call
+                for tool_call in assistant_message.tool_calls:
+                    function_name = tool_call.function.name
+                    function_args = json.loads(tool_call.function.arguments)
+                    
+                    print(f"[AI] Function call requested: {function_name} with args: {json.dumps(function_args, indent=2)}")
+                    
+                    # Add to function calls list
+                    function_calls.append({
+                        'id': tool_call.id,
+                        'name': function_name,
+                        'args': function_args
+                    })
+            else:
+                print("[AI] No function calls requested by the assistant")
+                
+            return assistant_message.content, chat_history, function_calls
+            
+        except Exception as e:
+            print(f"[AI] Error during OpenAI API call: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return f"I encountered an error processing your request: {str(e)}", chat_history, None
         
     def process_function_response(self, chat_history, function_name, function_args, function_response):
         """
@@ -462,22 +477,50 @@ class AIAssistant:
         Returns:
             tuple: (response, updated_chat_history)
         """
+        print(f"[AI] Processing function response for {function_name}")
+        
         # Find the right tool call ID
         tool_call_id = None
-        for message in chat_history:
+        
+        # Search through all assistant messages for matching tool calls
+        for message in reversed(chat_history):  # Start from the most recent messages
             if message.get('role') == 'assistant' and hasattr(message, 'tool_calls'):
                 for tool_call in message.tool_calls:
                     if tool_call.function.name == function_name:
-                        # Match args to be sure
-                        if json.loads(tool_call.function.arguments) == function_args:
-                            tool_call_id = tool_call.id
-                            break
+                        try:
+                            # Convert and compare arguments
+                            args_from_call = json.loads(tool_call.function.arguments)
+                            if args_from_call == function_args:
+                                tool_call_id = tool_call.id
+                                print(f"[AI] Found matching tool call ID: {tool_call_id}")
+                                break
+                        except Exception as e:
+                            print(f"[AI] Error parsing arguments: {str(e)}")
+                
+                if tool_call_id:  # If we found a match, stop searching
+                    break
         
         if not tool_call_id:
-            print("Warning: Could not find matching tool call ID")
-            tool_call_id = "unknown"
+            print("[AI] Warning: Could not find matching tool call ID")
+            # Fallback - use the most recent tool call ID if available
+            for message in reversed(chat_history):
+                if message.get('role') == 'assistant' and hasattr(message, 'tool_calls') and message.tool_calls:
+                    tool_call_id = message.tool_calls[0].id
+                    print(f"[AI] Using fallback tool call ID: {tool_call_id}")
+                    break
+                    
+            if not tool_call_id:
+                print("[AI] No tool call ID found, using 'unknown'")
+                tool_call_id = "unknown"
+        
+        # Check for errors in function response
+        if "error" in function_response:
+            print(f"[AI] Function returned an error: {function_response['error']}")
+        else:
+            print(f"[AI] Function executed successfully with {function_response.get('count', 0)} results")
         
         # Add the function response to chat history
+        print(f"[AI] Adding function response with tool_call_id: {tool_call_id}")
         chat_history.append({
             "role": "tool",
             "tool_call_id": tool_call_id,
@@ -485,18 +528,43 @@ class AIAssistant:
             "content": json.dumps(function_response)
         })
         
+        # Verify all tool calls have responses before proceeding
+        all_tool_calls = []
+        for message in chat_history:
+            if message.get('role') == 'assistant' and hasattr(message, 'tool_calls'):
+                for call in message.tool_calls:
+                    all_tool_calls.append(call.id)
+        
+        tool_responses = []
+        for message in chat_history:
+            if message.get('role') == 'tool':
+                tool_responses.append(message.get('tool_call_id'))
+        
+        missing_responses = [tc for tc in all_tool_calls if tc not in tool_responses]
+        if missing_responses:
+            print(f"[AI] Warning: Missing tool responses for IDs: {missing_responses}")
+            print("[AI] Conversation may be incomplete for the OpenAI API")
+        
         # Get a new response from the assistant
-        second_response = self.client.chat.completions.create(
-            model=self.model,
-            messages=chat_history,
-            **self.config
-        )
-        
-        # Add the new response to chat history
-        assistant_response = second_response.choices[0].message
-        chat_history.append(assistant_response)
-        
-        return assistant_response.content, chat_history
+        print("[AI] Getting new response from assistant based on function results")
+        try:
+            second_response = self.client.chat.completions.create(
+                model=self.model,
+                messages=chat_history,
+                **self.config
+            )
+            
+            # Add the new response to chat history
+            assistant_response = second_response.choices[0].message
+            chat_history.append(assistant_response)
+            
+            print("[AI] Received new response from assistant")
+            return assistant_response.content, chat_history
+        except Exception as e:
+            print(f"[AI] Error getting response from assistant: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return f"I encountered an error processing the function response: {str(e)}", chat_history
         
     def analyze_response_for_options(self, response):
         """
