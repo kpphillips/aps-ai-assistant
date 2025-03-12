@@ -455,6 +455,10 @@ if "error_logs" not in st.session_state:
 if "api_calls" not in st.session_state:
     st.session_state.api_calls = []
 
+# Add a new session state to track processing steps
+if "processing_steps" not in st.session_state:
+    st.session_state.processing_steps = []
+
 # Flag to use mock API responses when real API calls fail
 if "use_mock_responses" not in st.session_state:
     st.session_state.use_mock_responses = False
@@ -465,6 +469,40 @@ def log_debug(message):
     timestamp = datetime.now().strftime("%H:%M:%S")
     st.session_state.debug_logs.append(f"[{timestamp}] {message}")
     print(message)  # Also print to console for server logs
+
+# Add a function to log processing steps that will be displayed to the user
+def log_processing_step(step_type, message, status="in_progress"):
+    """Log a processing step to be displayed in the UI
+    
+    Args:
+        step_type: Type of step (thinking, function_call, api_call, processing)
+        message: The message to display
+        status: Status of the step (in_progress, completed, error)
+    """
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    step = {
+        "timestamp": timestamp,
+        "type": step_type,
+        "message": message,
+        "status": status
+    }
+    st.session_state.processing_steps.append(step)
+    log_debug(f"[{step_type}] {message}")
+    return len(st.session_state.processing_steps) - 1  # Return index for later updates
+
+# Function to update the status of a processing step
+def update_step_status(step_index, status, message=None):
+    """Update the status of a processing step
+    
+    Args:
+        step_index: Index of the step to update
+        status: New status (in_progress, completed, error)
+        message: Optional new message
+    """
+    if 0 <= step_index < len(st.session_state.processing_steps):
+        st.session_state.processing_steps[step_index]["status"] = status
+        if message:
+            st.session_state.processing_steps[step_index]["message"] = message
 
 # Add a function to log errors persistently
 def log_error(message, exception=None):
@@ -510,110 +548,461 @@ def log_api_call(function_name, args, result):
     # Also print to console
     print(f"[{timestamp}] API CALL: {function_name} - {status}: {summary}")
 
+# Function to display processing steps in a compact format
+def display_processing_steps():
+    """Display processing steps in a compact, expandable format"""
+    if not st.session_state.processing_steps:
+        return
+    
+    # Create a container for the processing steps
+    with st.container():
+        # Display a small header
+        st.markdown("### Processing Steps")
+        
+        # Create a compact summary
+        total_steps = len(st.session_state.processing_steps)
+        completed = sum(1 for step in st.session_state.processing_steps if step["status"] == "completed")
+        errors = sum(1 for step in st.session_state.processing_steps if step["status"] == "error")
+        in_progress = sum(1 for step in st.session_state.processing_steps if step["status"] == "in_progress")
+        
+        # Show a status indicator
+        if in_progress > 0:
+            st.info(f"{completed} completed, {in_progress} in progress, {errors} errors")
+        elif errors > 0:
+            st.error(f"{completed} completed, {errors} errors")
+        else:
+            st.success(f"All {total_steps} steps completed successfully")
+        
+        # Show the steps in an expander
+        with st.expander("View Processing Details", expanded=False):
+            for step in st.session_state.processing_steps:
+                # Display with appropriate icon based on status
+                if step["status"] == "in_progress":
+                    st.markdown(f"⏳ **[{step['timestamp']}]** {step['message']}")
+                elif step["status"] == "error":
+                    st.markdown(f"❌ **[{step['timestamp']}]** {step['message']}")
+                else:  # completed
+                    st.markdown(f"✅ **[{step['timestamp']}]** {step['message']}")
+            
+            # Add a button to clear the steps
+            if st.button("Clear Processing History"):
+                st.session_state.processing_steps = []
+                st.rerun()
+
 # Helper functions for UI
 def handle_hub_selection(hub_id, hub_name):
     """Handle hub selection from UI"""
+    # Create a user message for the selection
     user_message = f"I select Hub: {hub_name} (ID: {hub_id})"
     st.session_state.messages.append({"role": "user", "content": user_message})
     
+    # Log the hub selection as a processing step
+    selection_step = log_processing_step("selection", f"User selected hub: {hub_name}")
+    
     with st.spinner("Processing..."):
-        # Call the backend
-        projects_result = get_projects(hub_id)
-        
-        if "error" in projects_result:
-            assistant_message = f"I encountered an error: {projects_result['error']}"
-        else:
-            # Store projects in session state
-            st.session_state.current_data["projects"] = projects_result
+        try:
+            # Add the user message to chat history
+            if st.session_state.chat_history is None:
+                # Initialize chat history with system message if it doesn't exist
+                st.session_state.chat_history = [
+                    {"role": "system", "content": DATA_MANAGEMENT_PROMPT}
+                ]
             
-            # Process the result through the assistant
-            assistant_response, st.session_state.chat_history = process_function_result(
-                st.session_state.chat_history,
-                "get_projects",
-                {"hub_id": hub_id},
-                projects_result
-            )
+            st.session_state.chat_history.append({"role": "user", "content": user_message})
             
-            # Add the assistant's response to the messages
-            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+            # We need a proper assistant response with tool_calls before we can add a tool message
+            # First, create a simulated assistant message with a proper tool call
+            projects_call_id = f"projects_call_{hub_id[:8]}"
+            assistant_message = {
+                "role": "assistant",
+                "content": f"I'll get the projects for the hub {hub_name}.",
+                "tool_calls": [
+                    {
+                        "id": projects_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "get_projects",
+                            "arguments": json.dumps({"hub_id": hub_id})
+                        }
+                    }
+                ]
+            }
             
-            # Analyze if the response contains options to show
-            options_info = analyze_response_for_options(assistant_response)
-            if options_info and options_info["has_options"]:
-                st.session_state.show_options = True
-                st.session_state.option_type = options_info["option_type"]
+            # Add the simulated assistant message to chat history
+            st.session_state.chat_history.append(assistant_message)
+            
+            # Now call the API
+            projects_result = get_projects(hub_id)
+            
+            # Log API call
+            log_api_call("get_projects", {"hub_id": hub_id}, projects_result)
+            
+            if "error" in projects_result:
+                # Handle error
+                assistant_message = f"I encountered an error: {projects_result['error']}"
+                st.session_state.messages.append({"role": "assistant", "content": assistant_message})
+                update_step_status(selection_step, "error", f"Error fetching projects: {projects_result['error']}")
             else:
-                st.session_state.show_options = False
+                # Store projects in session state
+                st.session_state.current_data["projects"] = projects_result
+                
+                # Add the tool response to chat history (now properly following a message with tool_calls)
+                tool_message = {
+                    "role": "tool",
+                    "tool_call_id": projects_call_id,
+                    "name": "get_projects",
+                    "content": json.dumps(projects_result)
+                }
+                st.session_state.chat_history.append(tool_message)
+                
+                # Get response from OpenAI about the projects
+                try:
+                    # Format the messages for OpenAI
+                    formatted_messages = []
+                    for msg in st.session_state.chat_history:
+                        if isinstance(msg, dict):
+                            formatted_messages.append(msg)
+                        else:
+                            # Convert from object to dict if needed
+                            msg_dict = {"role": msg.role}
+                            
+                            if hasattr(msg, 'content') and msg.content is not None:
+                                msg_dict["content"] = msg.content
+                                
+                            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                                msg_dict["tool_calls"] = [
+                                    {
+                                        "id": tc.id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": tc.function.name,
+                                            "arguments": tc.function.arguments
+                                        }
+                                    } for tc in msg.tool_calls
+                                ]
+                                
+                            if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
+                                msg_dict["tool_call_id"] = msg.tool_call_id
+                                
+                            if hasattr(msg, 'name') and msg.name:
+                                msg_dict["name"] = msg.name
+                                
+                            formatted_messages.append(msg_dict)
+                    
+                    # Call OpenAI API
+                    response = client.chat.completions.create(
+                        model=MODEL_NAME,
+                        messages=formatted_messages,
+                        **MODEL_CONFIG
+                    )
+                    
+                    # Get the assistant's response
+                    assistant_response = response.choices[0].message.content
+                    
+                    # Add the response to chat history
+                    st.session_state.chat_history.append(response.choices[0].message)
+                    
+                    # Add the assistant's response to the UI messages
+                    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+                    
+                    # Analyze if the response contains options to show
+                    options_info = analyze_response_for_options(assistant_response)
+                    if options_info and options_info["has_options"]:
+                        st.session_state.show_options = True
+                        st.session_state.option_type = options_info["option_type"]
+                    else:
+                        st.session_state.show_options = False
+                    
+                    update_step_status(selection_step, "completed", f"Retrieved projects for hub: {hub_name}")
+                    
+                except Exception as e:
+                    error_msg = f"Error getting assistant response: {str(e)}"
+                    log_error(error_msg, e)
+                    st.error(error_msg)
+                    update_step_status(selection_step, "error", error_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": f"I encountered an error: {str(e)}"})
+        except Exception as e:
+            error_msg = f"Error processing hub selection: {str(e)}"
+            log_error(error_msg, e)
+            st.error(error_msg)
+            update_step_status(selection_step, "error", error_msg)
+            st.session_state.messages.append({"role": "assistant", "content": f"I encountered an error: {str(e)}"})
 
 def handle_project_selection(project_id, project_name):
     """Handle project selection from UI"""
+    # Create a user message for the selection
     user_message = f"I select Project: {project_name} (ID: {project_id})"
     st.session_state.messages.append({"role": "user", "content": user_message})
     
+    # Log the project selection as a processing step
+    selection_step = log_processing_step("selection", f"User selected project: {project_name}")
+    
     with st.spinner("Processing..."):
-        # Call the backend
-        items_result = get_items(project_id)
-        
-        if "error" in items_result:
-            assistant_message = f"I encountered an error: {items_result['error']}"
-            st.session_state.messages.append({"role": "assistant", "content": assistant_message})
-        else:
-            # Store items in session state
-            st.session_state.current_data["items"] = items_result
+        try:
+            # Add the user message to chat history
+            if st.session_state.chat_history is None:
+                # Initialize chat history with system message if it doesn't exist
+                st.session_state.chat_history = [
+                    {"role": "system", "content": DATA_MANAGEMENT_PROMPT}
+                ]
             
-            # Process the result through the assistant
-            assistant_response, st.session_state.chat_history = process_function_result(
-                st.session_state.chat_history,
-                "get_items",
-                {"project_id": project_id},
-                items_result
-            )
+            st.session_state.chat_history.append({"role": "user", "content": user_message})
             
-            # Add the assistant's response to the messages
-            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+            # We need a proper assistant response with tool_calls before we can add a tool message
+            # First, create a simulated assistant message with a proper tool call
+            items_call_id = f"items_call_{project_id[:8]}"
+            assistant_message = {
+                "role": "assistant",
+                "content": f"I'll get the items for the project {project_name}.",
+                "tool_calls": [
+                    {
+                        "id": items_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "get_items",
+                            "arguments": json.dumps({"project_id": project_id})
+                        }
+                    }
+                ]
+            }
             
-            # Analyze if the response contains options to show
-            options_info = analyze_response_for_options(assistant_response)
-            if options_info and options_info["has_options"]:
-                st.session_state.show_options = True
-                st.session_state.option_type = options_info["option_type"]
+            # Add the simulated assistant message to chat history
+            st.session_state.chat_history.append(assistant_message)
+            
+            # Now call the API
+            items_result = get_items(project_id)
+            
+            # Log API call
+            log_api_call("get_items", {"project_id": project_id}, items_result)
+            
+            if "error" in items_result:
+                # Handle error
+                assistant_message = f"I encountered an error: {items_result['error']}"
+                st.session_state.messages.append({"role": "assistant", "content": assistant_message})
+                update_step_status(selection_step, "error", f"Error fetching items: {items_result['error']}")
             else:
-                st.session_state.show_options = False
+                # Store items in session state
+                st.session_state.current_data["items"] = items_result
+                
+                # Add the tool response to chat history (now properly following a message with tool_calls)
+                tool_message = {
+                    "role": "tool",
+                    "tool_call_id": items_call_id,
+                    "name": "get_items",
+                    "content": json.dumps(items_result)
+                }
+                st.session_state.chat_history.append(tool_message)
+                
+                # Get response from OpenAI about the items
+                try:
+                    # Format the messages for OpenAI
+                    formatted_messages = []
+                    for msg in st.session_state.chat_history:
+                        if isinstance(msg, dict):
+                            formatted_messages.append(msg)
+                        else:
+                            # Convert from object to dict if needed
+                            msg_dict = {"role": msg.role}
+                            
+                            if hasattr(msg, 'content') and msg.content is not None:
+                                msg_dict["content"] = msg.content
+                                
+                            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                                msg_dict["tool_calls"] = [
+                                    {
+                                        "id": tc.id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": tc.function.name,
+                                            "arguments": tc.function.arguments
+                                        }
+                                    } for tc in msg.tool_calls
+                                ]
+                                
+                            if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
+                                msg_dict["tool_call_id"] = msg.tool_call_id
+                                
+                            if hasattr(msg, 'name') and msg.name:
+                                msg_dict["name"] = msg.name
+                                
+                            formatted_messages.append(msg_dict)
+                    
+                    # Call OpenAI API
+                    response = client.chat.completions.create(
+                        model=MODEL_NAME,
+                        messages=formatted_messages,
+                        **MODEL_CONFIG
+                    )
+                    
+                    # Get the assistant's response
+                    assistant_response = response.choices[0].message.content
+                    
+                    # Add the response to chat history
+                    st.session_state.chat_history.append(response.choices[0].message)
+                    
+                    # Add the assistant's response to the UI messages
+                    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+                    
+                    # Analyze if the response contains options to show
+                    options_info = analyze_response_for_options(assistant_response)
+                    if options_info and options_info["has_options"]:
+                        st.session_state.show_options = True
+                        st.session_state.option_type = options_info["option_type"]
+                    else:
+                        st.session_state.show_options = False
+                    
+                    update_step_status(selection_step, "completed", f"Retrieved items for project: {project_name}")
+                    
+                except Exception as e:
+                    error_msg = f"Error getting assistant response: {str(e)}"
+                    log_error(error_msg, e)
+                    st.error(error_msg)
+                    update_step_status(selection_step, "error", error_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": f"I encountered an error: {str(e)}"})
+        except Exception as e:
+            error_msg = f"Error processing project selection: {str(e)}"
+            log_error(error_msg, e)
+            st.error(error_msg)
+            update_step_status(selection_step, "error", error_msg)
+            st.session_state.messages.append({"role": "assistant", "content": f"I encountered an error: {str(e)}"})
 
 def handle_item_selection(item_id, project_id, item_name):
     """Handle item selection from UI"""
+    # Create a user message for the selection
     user_message = f"I select Item: {item_name} (ID: {item_id})"
     st.session_state.messages.append({"role": "user", "content": user_message})
     
+    # Log the item selection as a processing step
+    selection_step = log_processing_step("selection", f"User selected item: {item_name}")
+    
     with st.spinner("Processing..."):
-        # Call the backend
-        versions_result = get_versions(project_id, item_id)
-        
-        if "error" in versions_result:
-            assistant_message = f"I encountered an error: {versions_result['error']}"
-            st.session_state.messages.append({"role": "assistant", "content": assistant_message})
-        else:
-            # Store versions in session state
-            st.session_state.current_data["versions"] = versions_result
+        try:
+            # Add the user message to chat history
+            if st.session_state.chat_history is None:
+                # Initialize chat history with system message if it doesn't exist
+                st.session_state.chat_history = [
+                    {"role": "system", "content": DATA_MANAGEMENT_PROMPT}
+                ]
             
-            # Process the result through the assistant
-            assistant_response, st.session_state.chat_history = process_function_result(
-                st.session_state.chat_history,
-                "get_versions",
-                {"project_id": project_id, "item_id": item_id},
-                versions_result
-            )
+            st.session_state.chat_history.append({"role": "user", "content": user_message})
             
-            # Add the assistant's response to the messages
-            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+            # We need a proper assistant response with tool_calls before we can add a tool message
+            # First, create a simulated assistant message with a proper tool call
+            versions_call_id = f"versions_call_{item_id[:8]}"
+            assistant_message = {
+                "role": "assistant",
+                "content": f"I'll get the versions for the item {item_name}.",
+                "tool_calls": [
+                    {
+                        "id": versions_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "get_versions",
+                            "arguments": json.dumps({"project_id": project_id, "item_id": item_id})
+                        }
+                    }
+                ]
+            }
             
-            # Analyze if the response contains options to show
-            options_info = analyze_response_for_options(assistant_response)
-            if options_info and options_info["has_options"]:
-                st.session_state.show_options = True
-                st.session_state.option_type = options_info["option_type"]
+            # Add the simulated assistant message to chat history
+            st.session_state.chat_history.append(assistant_message)
+            
+            # Now call the API
+            versions_result = get_versions(project_id, item_id)
+            
+            # Log API call
+            log_api_call("get_versions", {"project_id": project_id, "item_id": item_id}, versions_result)
+            
+            if "error" in versions_result:
+                # Handle error
+                assistant_message = f"I encountered an error: {versions_result['error']}"
+                st.session_state.messages.append({"role": "assistant", "content": assistant_message})
+                update_step_status(selection_step, "error", f"Error fetching versions: {versions_result['error']}")
             else:
-                st.session_state.show_options = False
+                # Store versions in session state
+                st.session_state.current_data["versions"] = versions_result
+                
+                # Add the tool response to chat history (now properly following a message with tool_calls)
+                tool_message = {
+                    "role": "tool",
+                    "tool_call_id": versions_call_id,
+                    "name": "get_versions",
+                    "content": json.dumps(versions_result)
+                }
+                st.session_state.chat_history.append(tool_message)
+                
+                # Get response from OpenAI about the versions
+                try:
+                    # Format the messages for OpenAI
+                    formatted_messages = []
+                    for msg in st.session_state.chat_history:
+                        if isinstance(msg, dict):
+                            formatted_messages.append(msg)
+                        else:
+                            # Convert from object to dict if needed
+                            msg_dict = {"role": msg.role}
+                            
+                            if hasattr(msg, 'content') and msg.content is not None:
+                                msg_dict["content"] = msg.content
+                                
+                            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                                msg_dict["tool_calls"] = [
+                                    {
+                                        "id": tc.id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": tc.function.name,
+                                            "arguments": tc.function.arguments
+                                        }
+                                    } for tc in msg.tool_calls
+                                ]
+                                
+                            if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
+                                msg_dict["tool_call_id"] = msg.tool_call_id
+                                
+                            if hasattr(msg, 'name') and msg.name:
+                                msg_dict["name"] = msg.name
+                                
+                            formatted_messages.append(msg_dict)
+                    
+                    # Call OpenAI API
+                    response = client.chat.completions.create(
+                        model=MODEL_NAME,
+                        messages=formatted_messages,
+                        **MODEL_CONFIG
+                    )
+                    
+                    # Get the assistant's response
+                    assistant_response = response.choices[0].message.content
+                    
+                    # Add the response to chat history
+                    st.session_state.chat_history.append(response.choices[0].message)
+                    
+                    # Add the assistant's response to the UI messages
+                    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+                    
+                    # Analyze if the response contains options to show
+                    options_info = analyze_response_for_options(assistant_response)
+                    if options_info and options_info["has_options"]:
+                        st.session_state.show_options = True
+                        st.session_state.option_type = options_info["option_type"]
+                    else:
+                        st.session_state.show_options = False
+                    
+                    update_step_status(selection_step, "completed", f"Retrieved versions for item: {item_name}")
+                    
+                except Exception as e:
+                    error_msg = f"Error getting assistant response: {str(e)}"
+                    log_error(error_msg, e)
+                    st.error(error_msg)
+                    update_step_status(selection_step, "error", error_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": f"I encountered an error: {str(e)}"})
+        except Exception as e:
+            error_msg = f"Error processing item selection: {str(e)}"
+            log_error(error_msg, e)
+            st.error(error_msg)
+            update_step_status(selection_step, "error", error_msg)
+            st.session_state.messages.append({"role": "assistant", "content": f"I encountered an error: {str(e)}"})
 
 def display_options():
     """Display the appropriate options based on the current state"""
@@ -760,6 +1149,9 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+# Display processing steps (small but expandable)
+display_processing_steps()
+
 # Display dynamic options if needed
 if st.session_state.show_options:
     with st.container():
@@ -776,6 +1168,12 @@ if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
     with st.chat_message("user"):
         st.markdown(prompt)
     
+    # Reset processing steps for new query
+    st.session_state.processing_steps = []
+    
+    # Add initial thinking step
+    thinking_step = log_processing_step("thinking", "Thinking...", "in_progress")
+    
     # Get the assistant's response
     with st.spinner("Thinking..."):
         try:
@@ -784,6 +1182,9 @@ if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
                 prompt, 
                 st.session_state.chat_history
             )
+            
+            # Update thinking step to completed
+            update_step_status(thinking_step, "completed", "Processed user query")
             
             # Display assistant message
             with st.chat_message("assistant"):
@@ -798,16 +1199,15 @@ if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
             # If function calls were requested, execute them
             if function_calls:
                 log_debug(f"Assistant requested {len(function_calls)} function call(s)")
+                function_step = log_processing_step("function_call", f"Assistant requested {len(function_calls)} function call(s)", "in_progress")
                 st.info(f"The assistant wants to execute {len(function_calls)} function call(s) to get more information.")
                 
                 for call in function_calls:
                     function_name = call["name"]
                     function_args = call["args"]
                     
-                    # Log and display thinking info in expandable section that STAYS VISIBLE
-                    with st.expander(f"Assistant's function call details for {function_name}", expanded=False):
-                        st.code(json.dumps(call, indent=2), language="json")
-                        log_debug(f"Function call details: {function_name} with args: {json.dumps(function_args)}")
+                    # Log function call step
+                    call_step = log_processing_step("api_call", f"Executing {function_name} with args: {json.dumps(function_args)}", "in_progress")
                     
                     # Create a progress bar for the API call
                     progress_bar = st.progress(0)
@@ -842,6 +1242,7 @@ if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
                                 else:
                                     error_msg = f"Unknown function: {function_name} or missing required arguments"
                                     log_error(error_msg)
+                                    update_step_status(call_step, "error", error_msg)
                                     st.error(error_msg)
                                     continue
                             except Exception as e:
@@ -854,6 +1255,7 @@ if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
                                 if real_result and "error" in real_result:
                                     error_message = real_result["error"]
                                     log_debug(f"Real API call failed with error: {error_message}, using mock data")
+                                    update_step_status(call_step, "error", f"API call failed: {error_message}, falling back to mock data")
                                     
                                     # Display a warning about using mock data
                                     st.warning(f"API call failed: {error_message}. Using mock data instead.")
@@ -872,14 +1274,18 @@ if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
                                         result["item_id"] = function_args["item_id"]
                                     
                                     log_debug(f"Using mock data for {function_name}")
+                                    if st.session_state.use_mock_responses:
+                                        update_step_status(call_step, "completed", f"Used mock data for {function_name} (mock mode enabled)")
                                     st.info("Using mock data for demonstration purposes.")
                                 else:
                                     # No mock available
                                     result = {"error": f"No mock data available for {function_name}", "mock": True}
                                     log_error(f"No mock data available for {function_name}")
+                                    update_step_status(call_step, "error", f"No mock data available for {function_name}")
                             else:
                                 # Use the real result
                                 result = real_result
+                                update_step_status(call_step, "completed", f"Successfully executed {function_name}")
                             
                             # Store the result in session state
                             if function_name == "get_hubs":
@@ -905,6 +1311,7 @@ if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
                                     auth_error_msg = "Authentication Error: Your Autodesk Platform Services token is invalid or expired."
                                     log_error(auth_error_msg)
                                     log_error(f"API Error Details: {error_message}")
+                                    update_step_status(call_step, "error", auth_error_msg)
                                     
                                     # Create a persistent error message display
                                     st.error(auth_error_msg)
@@ -914,6 +1321,7 @@ if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
                                     st.warning("You can enable mock data in the sidebar to continue working without a valid token.")
                                 else:
                                     log_error(f"API Error: {error_message}")
+                                    update_step_status(call_step, "error", f"API Error: {error_message}")
                                     st.error(f"API Error: {error_message}")
                                 
                                 st.warning("The assistant will try to handle this error gracefully.")
@@ -947,6 +1355,7 @@ if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
                                 st.success(success_msg)
                             
                                 # Process the function result
+                                process_step = log_processing_step("processing", f"Processing API response for {function_name}", "in_progress")
                                 log_debug(f"Processing API response for {function_name} with assistant")
                                 st.info("Processing API response with the assistant...")
                                 
@@ -959,6 +1368,7 @@ if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
                                     )
                                     
                                     progress_bar.progress(100)
+                                    update_step_status(process_step, "completed", f"Processed {function_name} results")
                                     
                                     # Update the assistant's response
                                     with st.chat_message("assistant"):
@@ -973,6 +1383,7 @@ if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
                                 except Exception as e:
                                     error_msg = f"Error processing function result: {str(e)}"
                                     log_error(error_msg, e)
+                                    update_step_status(process_step, "error", error_msg)
                                     st.error(error_msg)
                                     # Create persistent debug info with traceback
                                     with st.expander("Error details", expanded=True):
@@ -981,11 +1392,15 @@ if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
                         except Exception as e:
                             error_msg = f"Error executing {function_name}: {str(e)}"
                             log_error(error_msg, e)
+                            update_step_status(call_step, "error", error_msg)
                             st.error(error_msg)
                             # Create persistent debug info with traceback
                             with st.expander("Error details", expanded=True):
                                 import traceback
                                 st.code(traceback.format_exc(), language="python")
+                
+                # Update the function calls step to completed
+                update_step_status(function_step, "completed", f"Completed {len(function_calls)} function call(s)")
             
             # Update option display state based on the response
             if options_info and options_info["has_options"]:
@@ -998,6 +1413,8 @@ if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
         except Exception as e:
             error_msg = f"Error processing query: {str(e)}"
             log_error(error_msg, e)
+            if 'thinking_step' in locals():
+                update_step_status(thinking_step, "error", error_msg)
             st.error(error_msg)
             # Ensure chat history doesn't get corrupted
             if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user":
@@ -1120,6 +1537,7 @@ with st.sidebar:
         }
         st.session_state.show_options = False
         st.session_state.option_type = None
+        st.session_state.processing_steps = []  # Clear processing steps
         
         # Display confirmation
         st.success("Conversation cleared successfully! All history and data have been reset.")
