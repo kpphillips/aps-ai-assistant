@@ -2,17 +2,14 @@ import streamlit as st
 import sys
 import os
 import json
-import importlib.util
 from datetime import datetime
 
-# Add the parent directory to the path to import business logic
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Add the DataManagement directory to the path
 data_mgmt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "01_DataManagment")
 sys.path.append(data_mgmt_path)
 
-# Import directly from the helper files
-from dm_3_helpers import get_hubs, get_projects, get_items, get_versions
+# Import the Autodesk API helper and OpenAI configuration
+from dm_3_helpers import AutodeskAPIHelper
 from dm_0_config import MODEL_NAME, MODEL_CONFIG
 from dm_1_prompts import DATA_MANAGEMENT_PROMPT
 
@@ -20,69 +17,23 @@ from dm_1_prompts import DATA_MANAGEMENT_PROMPT
 from openai import OpenAI
 client = OpenAI()
 
-# Mock API responses for testing
-MOCK_RESPONSES = {
-    "get_hubs": {
-        "hubs": [
-            {"id": "mock_hub_1", "name": "Mock Hub 1"},
-            {"id": "mock_hub_2", "name": "Mock Hub 2"},
-            {"id": "mock_hub_3", "name": "Demo Hub"}
-        ],
-        "count": 3
-    },
-    "get_projects": {
-        "hub_id": "mock_hub_1",
-        "projects": [
-            {"id": "mock_project_1", "name": "Mock Project A"},
-            {"id": "mock_project_2", "name": "Mock Project B"},
-            {"id": "mock_project_3", "name": "Demo Project"}
-        ],
-        "count": 3
-    },
-    "get_items": {
-        "project_id": "mock_project_1",
-        "items": [
-            {"id": "mock_item_1", "name": "Mock Drawing.dwg", "file_type": "dwg", "last_modified": "2023-03-15 10:30:00", "version_id": "v1"},
-            {"id": "mock_item_2", "name": "Mock Model.rvt", "file_type": "rvt", "last_modified": "2023-03-14 09:15:00", "version_id": "v1"},
-            {"id": "mock_item_3", "name": "Demo Document.pdf", "file_type": "pdf", "last_modified": "2023-03-13 14:45:00", "version_id": "v1"}
-        ],
-        "count": 3
-    },
-    "get_versions": {
-        "project_id": "mock_project_1",
-        "item_id": "mock_item_1",
-        "versions": [
-            {"id": "mock_version_1", "version_number": 2, "name": "Mock Drawing.dwg", "created_by": "Mock User", "created_date": "2023-03-15 10:30:00", "file_type": "dwg", "storage_size": "2.5 MB"},
-            {"id": "mock_version_2", "version_number": 1, "name": "Mock Drawing.dwg", "created_by": "Mock User", "created_date": "2023-03-14 15:20:00", "file_type": "dwg", "storage_size": "2.3 MB"}
-        ],
-        "count": 2
-    }
-}
+# Initialize the Autodesk API Helper
+api_helper = AutodeskAPIHelper()
 
-# Class for helper functions needed by the UI
-class UIHelpers:
-    @staticmethod
-    def filter_projects(projects, criteria):
-        """Filter projects based on criteria"""
-        if not criteria:
-            return projects
-        return [p for p in projects if criteria.lower() in p.get('name', '').lower()]
+# Set up page configuration
+st.set_page_config(
+    page_title="Autodesk Data Management API Demo",
+    page_icon="🏗️",
+    layout="wide"
+)
+
+class ChatAssistant:
+    """Class for handling the chat assistant functionality"""
     
-    @staticmethod
-    def filter_items(items, criteria):
-        """Filter items based on criteria"""
-        if not criteria:
-            return items
-        return [i for i in items if (
-            criteria.lower() in i.get('name', '').lower() or 
-            criteria.lower() in i.get('file_type', '').lower()
-        )]
-
-    @staticmethod
-    def process_user_query(user_input, chat_history=None):
-        """Process user query through OpenAI"""
-        # Tools definition for function calling
-        tools = [
+    def __init__(self):
+        """Initialize the chat assistant"""
+        self.api_helper = api_helper
+        self.tools = [
             {
                 "type": "function",
                 "function": {
@@ -151,7 +102,9 @@ class UIHelpers:
                 }
             }
         ]
-
+    
+    def process_message(self, user_input, chat_history=None):
+        """Process a user message and return the response"""
         # Initialize chat history if None
         if chat_history is None:
             chat_history = [
@@ -165,7 +118,7 @@ class UIHelpers:
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=chat_history,
-            tools=tools,
+            tools=self.tools,
             **MODEL_CONFIG
         )
         
@@ -175,174 +128,28 @@ class UIHelpers:
         # Add the assistant's message to chat history
         chat_history.append(assistant_message)
         
-        # Initialize function_calls as None
-        function_calls = None
-        
         # Check if the assistant wants to call a function
-        if assistant_message.tool_calls:
-            function_calls = []
-            
+        if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
             # Process each tool call
             for tool_call in assistant_message.tool_calls:
                 function_name = tool_call.function.name
                 function_args = json.loads(tool_call.function.arguments)
                 
-                # Add to function calls list
-                function_calls.append({
-                    'id': tool_call.id,
-                    'name': function_name,
-                    'args': function_args
-                })
-        
-        return assistant_message.content, chat_history, function_calls
-
-    @staticmethod
-    def process_function_result(chat_history, function_name, function_args, function_response):
-        """Process function result and get AI response"""
-        # Find the right tool call ID
-        tool_call_id = None
-        
-        # Debug logging
-        log_debug(f"\nLooking for tool call ID for function: {function_name}")
-        log_debug(f"Function args: {json.dumps(function_args)}")
-        
-        # We need to be careful with the data structure of chat_history elements
-        # The OpenAI API returns objects for assistant messages, but we need to handle both objects and dictionaries
-        # First, find the most recent assistant message with tool calls
-        assistant_message = None
-        for message in reversed(chat_history):
-            role = message.get('role') if isinstance(message, dict) else getattr(message, 'role', None)
-            if role == 'assistant':
-                # Check for tool_calls in this message
-                if isinstance(message, dict) and 'tool_calls' in message:
-                    assistant_message = message
-                    log_debug(f"Found assistant message (dict) with tool_calls")
-                    break
-                elif hasattr(message, 'tool_calls') and message.tool_calls:
-                    assistant_message = message
-                    log_debug(f"Found assistant message (object) with tool_calls")
-                    break
-        
-        # If we found an assistant message with tool calls, look for our specific function
-        if assistant_message:
-            tool_calls = assistant_message.get('tool_calls') if isinstance(assistant_message, dict) else assistant_message.tool_calls
-            
-            # Convert tool_calls to a standard format regardless of input type
-            if isinstance(tool_calls, list):
-                log_debug(f"Tool calls is already a list with {len(tool_calls)} items")
-                # Direct list from dictionary
-                for tc in tool_calls:
-                    tc_name = tc.get('function', {}).get('name') if isinstance(tc, dict) else getattr(getattr(tc, 'function', None), 'name', None)
-                    if tc_name == function_name:
-                        log_debug(f"Found matching function name: {tc_name}")
-                        tc_args = tc.get('function', {}).get('arguments') if isinstance(tc, dict) else getattr(getattr(tc, 'function', None), 'arguments', None)
-                        
-                        # Compare arguments
-                        try:
-                            tc_args_parsed = json.loads(tc_args) if tc_args else {}
-                            if tc_args_parsed == function_args:
-                                tool_call_id = tc.get('id') if isinstance(tc, dict) else getattr(tc, 'id', None)
-                                log_debug(f"Found matching tool call ID: {tool_call_id}")
-                                break
-                        except Exception as e:
-                            log_error(f"Error parsing arguments: {str(e)}")
-            else:
-                log_debug(f"Tool calls is not a list, it's a {type(tool_calls)}")
-        
-        # If we still don't have a tool_call_id, try a more lenient approach
-        if not tool_call_id:
-            log_debug("Could not find exact match for tool call ID, trying fallback approach")
-            
-            # Look for any tool call with the right function name
-            for message in reversed(chat_history):
-                if isinstance(message, dict) and message.get('role') == 'assistant' and 'tool_calls' in message:
-                    for tc in message.get('tool_calls', []):
-                        if isinstance(tc, dict) and tc.get('function', {}).get('name') == function_name:
-                            tool_call_id = tc.get('id')
-                            log_debug(f"Fallback: Found tool call ID {tool_call_id} from dict")
-                            break
-                elif hasattr(message, 'role') and message.role == 'assistant' and hasattr(message, 'tool_calls') and message.tool_calls:
-                    for tc in message.tool_calls:
-                        if hasattr(tc, 'function') and hasattr(tc.function, 'name') and tc.function.name == function_name:
-                            tool_call_id = tc.id
-                            log_debug(f"Fallback: Found tool call ID {tool_call_id} from object")
-                            break
+                # Execute the function
+                function_result = self.execute_function(function_name, function_args)
                 
-                if tool_call_id:
-                    break
-        
-        # If we still don't have a tool_call_id, create one using a deterministic approach
-        if not tool_call_id:
-            log_debug("No matching tool call ID found, creating a deterministic ID")
-            import hashlib
-            # Create a deterministic ID based on function name and arguments
-            hash_input = f"{function_name}:{json.dumps(function_args, sort_keys=True)}"
-            tool_call_id = f"call_{hashlib.md5(hash_input.encode()).hexdigest()[:24]}"
-            log_debug(f"Created deterministic tool call ID: {tool_call_id}")
-        
-        # Add the function response to chat history
-        log_debug(f"Adding tool message with tool_call_id: {tool_call_id}")
-        tool_message = {
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "name": function_name,
-            "content": json.dumps(function_response)
-        }
-        chat_history.append(tool_message)
-        
-        # Get a new response from the assistant
-        try:
-            log_debug("Getting new response from assistant")
+                # Add the function result to chat history
+                chat_history.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": function_name,
+                    "content": json.dumps(function_result)
+                })
             
-            # Debugging the message structure
-            message_types = []
-            for msg in chat_history:
-                if isinstance(msg, dict):
-                    message_types.append(f"Dict: {msg.get('role')}")
-                else:
-                    message_types.append(f"Object: {getattr(msg, 'role', 'unknown')}")
-            log_debug(f"Chat history contains: {', '.join(message_types)}")
-            
-            # Ensure all messages are properly formatted dictionaries
-            formatted_messages = []
-            for msg in chat_history:
-                if isinstance(msg, dict):
-                    formatted_messages.append(msg)
-                else:
-                    # Convert from object to dict
-                    msg_dict = {"role": msg.role}
-                    
-                    if hasattr(msg, 'content') and msg.content is not None:
-                        msg_dict["content"] = msg.content
-                        
-                    if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                        msg_dict["tool_calls"] = [
-                            {
-                                "id": tc.id,
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments
-                                }
-                            } for tc in msg.tool_calls
-                        ]
-                        
-                        # Add required 'type' field for each tool call
-                        for tc in msg_dict["tool_calls"]:
-                            tc["type"] = "function"
-                        
-                    if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
-                        msg_dict["tool_call_id"] = msg.tool_call_id
-                        
-                    if hasattr(msg, 'name') and msg.name:
-                        msg_dict["name"] = msg.name
-                        
-                    formatted_messages.append(msg_dict)
-            
-            # Make the API call with formatted messages
-            log_debug(f"Sending {len(formatted_messages)} messages to OpenAI")
+            # Get a new response from the assistant
             second_response = client.chat.completions.create(
                 model=MODEL_NAME,
-                messages=formatted_messages,
+                messages=chat_history,
                 **MODEL_CONFIG
             )
             
@@ -350,1198 +157,93 @@ class UIHelpers:
             assistant_response = second_response.choices[0].message
             chat_history.append(assistant_response)
             
-            log_debug("Received new response from assistant")
             return assistant_response.content, chat_history
+        
+        return assistant_message.content, chat_history
+    
+    def execute_function(self, function_name, function_args):
+        """Execute a function and return the result"""
+        try:
+            if function_name == "get_hubs":
+                return self.api_helper.get_hubs()
+            elif function_name == "get_projects":
+                hub_id = function_args["hub_id"]
+                return self.api_helper.get_projects(hub_id)
+            elif function_name == "get_items":
+                project_id = function_args["project_id"]
+                return self.api_helper.get_items(project_id)
+            elif function_name == "get_versions":
+                project_id = function_args["project_id"]
+                item_id = function_args["item_id"]
+                return self.api_helper.get_versions(project_id, item_id)
+            else:
+                return {"error": f"Unknown function: {function_name}"}
         except Exception as e:
-            error_msg = f"Error getting assistant response: {str(e)}"
-            log_error(error_msg, e)
-            import traceback
-            log_error(traceback.format_exc())
-            return f"I encountered an error processing the function response: {str(e)}", chat_history
+            return {"error": f"Error executing {function_name}: {str(e)}"}
 
-    @staticmethod
-    def analyze_response_for_options(response):
-        """Analyze response to detect options for UI display"""
-        # Check if response is None
-        if response is None:
-            return None
-            
-        # Check for common phrases that indicate options follow
-        option_indicators = [
-            "here is a list of",
-            "here are the",
-            "please select",
-            "choose from",
-            "select one of the following",
-            "here's a list of"
-        ]
-        
-        has_options = any(indicator.lower() in response.lower() for indicator in option_indicators)
-        
-        if not has_options:
-            return None
-            
-        # Try to determine what type of options these are
-        option_types = {
-            "hub": ["hub", "hubs"],
-            "project": ["project", "projects"],
-            "item": ["item", "items", "file", "files"],
-            "version": ["version", "versions"]
-        }
-        
-        option_type = None
-        for type_key, indicators in option_types.items():
-            if any(indicator.lower() in response.lower() for indicator in indicators):
-                option_type = type_key
-                break
-                
-        return {
-            "has_options": True,
-            "option_type": option_type
-        }
+# Initialize the chat assistant
+assistant = ChatAssistant()
 
-# Create instance of helper class
-ui_helpers = UIHelpers()
-
-# Use the helper functions
-filter_projects = ui_helpers.filter_projects
-filter_items = ui_helpers.filter_items
-process_user_query = ui_helpers.process_user_query
-process_function_result = ui_helpers.process_function_result
-analyze_response_for_options = ui_helpers.analyze_response_for_options
-
-# Page configuration
-st.set_page_config(
-    page_title="Autodesk Platform Services Assistant",
-    page_icon="🏗️",
-    layout="wide"
-)
-
-# App title
-st.title("Autodesk Platform Services Assistant")
-st.markdown("Ask questions about your Autodesk hubs, projects, and files in natural language.")
-
-# Initialize session state for chat history
+# Initialize session state
 if "messages" not in st.session_state:
     st.session_state.messages = []
     
-# Initialize session state for chat_history (OpenAI format)
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = None
-    
-# Initialize session state for current data
-if "current_data" not in st.session_state:
-    st.session_state.current_data = {
-        "hubs": None,
-        "projects": None,
-        "items": None,
-        "versions": None
-    }
 
-# Initialize session state for displaying options
-if "show_options" not in st.session_state:
-    st.session_state.show_options = False
-    
-if "option_type" not in st.session_state:
-    st.session_state.option_type = None
+# Set up the Streamlit UI
+st.title("Autodesk Data Management Assistant")
+st.markdown("""
+This assistant can help you navigate your Autodesk Platform Services (APS) data. 
+Ask questions about your hubs, projects, items, and file versions.
+""")
 
-# Initialize session state for debugging/logging
-if "debug_logs" not in st.session_state:
-    st.session_state.debug_logs = []
-
-if "error_logs" not in st.session_state:
-    st.session_state.error_logs = []
-
-if "api_calls" not in st.session_state:
-    st.session_state.api_calls = []
-
-# Add a new session state to track processing steps
-if "processing_steps" not in st.session_state:
-    st.session_state.processing_steps = []
-
-# Flag to use mock API responses when real API calls fail
-if "use_mock_responses" not in st.session_state:
-    st.session_state.use_mock_responses = False
-
-# Add a function to log debug messages persistently
-def log_debug(message):
-    """Add a debug log message that persists between reruns"""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    st.session_state.debug_logs.append(f"[{timestamp}] {message}")
-    print(message)  # Also print to console for server logs
-
-# Add a function to log processing steps that will be displayed to the user
-def log_processing_step(step_type, message, status="in_progress"):
-    """Log a processing step to be displayed in the UI
-    
-    Args:
-        step_type: Type of step (thinking, function_call, api_call, processing)
-        message: The message to display
-        status: Status of the step (in_progress, completed, error)
-    """
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    step = {
-        "timestamp": timestamp,
-        "type": step_type,
-        "message": message,
-        "status": status
-    }
-    st.session_state.processing_steps.append(step)
-    log_debug(f"[{step_type}] {message}")
-    return len(st.session_state.processing_steps) - 1  # Return index for later updates
-
-# Function to update the status of a processing step
-def update_step_status(step_index, status, message=None):
-    """Update the status of a processing step
-    
-    Args:
-        step_index: Index of the step to update
-        status: New status (in_progress, completed, error)
-        message: Optional new message
-    """
-    if 0 <= step_index < len(st.session_state.processing_steps):
-        st.session_state.processing_steps[step_index]["status"] = status
-        if message:
-            st.session_state.processing_steps[step_index]["message"] = message
-
-# Add a function to log errors persistently
-def log_error(message, exception=None):
-    """Add an error log message that persists between reruns"""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    error_msg = f"[{timestamp}] ERROR: {message}"
-    st.session_state.error_logs.append(error_msg)
-    
-    if exception:
-        import traceback
-        trace = traceback.format_exc()
-        st.session_state.error_logs.append(trace)
-    
-    print(error_msg)  # Also print to console for server logs
-    if exception:
-        print(traceback.format_exc())
-
-# Add a function to log API calls persistently
-def log_api_call(function_name, args, result):
-    """Log API call details that persist between reruns"""
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    
-    # Create a summary of the result
-    if "error" in result:
-        status = "ERROR"
-        summary = result["error"]
-    else:
-        status = "SUCCESS"
-        count = result.get("count", 0)
-        summary = f"Retrieved {count} results"
-    
-    call_info = {
-        "timestamp": timestamp,
-        "function": function_name,
-        "args": args,
-        "status": status,
-        "summary": summary,
-        "details": result
-    }
-    
-    st.session_state.api_calls.append(call_info)
-    
-    # Also print to console
-    print(f"[{timestamp}] API CALL: {function_name} - {status}: {summary}")
-
-# Function to display processing steps in a compact format
-def display_processing_steps():
-    """Display processing steps in a compact, expandable format"""
-    if not st.session_state.processing_steps:
-        return
-    
-    # Create a container for the processing steps
-    with st.container():
-        # Display a small header
-        st.markdown("### Processing Steps")
-        
-        # Create a compact summary
-        total_steps = len(st.session_state.processing_steps)
-        completed = sum(1 for step in st.session_state.processing_steps if step["status"] == "completed")
-        errors = sum(1 for step in st.session_state.processing_steps if step["status"] == "error")
-        in_progress = sum(1 for step in st.session_state.processing_steps if step["status"] == "in_progress")
-        
-        # Show a status indicator
-        if in_progress > 0:
-            st.info(f"{completed} completed, {in_progress} in progress, {errors} errors")
-        elif errors > 0:
-            st.error(f"{completed} completed, {errors} errors")
-        else:
-            st.success(f"All {total_steps} steps completed successfully")
-        
-        # Show the steps in an expander
-        with st.expander("View Processing Details", expanded=False):
-            for step in st.session_state.processing_steps:
-                # Display with appropriate icon based on status
-                if step["status"] == "in_progress":
-                    st.markdown(f"⏳ **[{step['timestamp']}]** {step['message']}")
-                elif step["status"] == "error":
-                    st.markdown(f"❌ **[{step['timestamp']}]** {step['message']}")
-                else:  # completed
-                    st.markdown(f"✅ **[{step['timestamp']}]** {step['message']}")
-            
-            # Add a button to clear the steps
-            if st.button("Clear Processing History"):
-                st.session_state.processing_steps = []
-                st.rerun()
-
-# Helper functions for UI
-def handle_hub_selection(hub_id, hub_name):
-    """Handle hub selection from UI"""
-    # Create a user message for the selection
-    user_message = f"I select Hub: {hub_name} (ID: {hub_id})"
-    st.session_state.messages.append({"role": "user", "content": user_message})
-    
-    # Log the hub selection as a processing step
-    selection_step = log_processing_step("selection", f"User selected hub: {hub_name}")
-    
-    with st.spinner("Processing..."):
-        try:
-            # Add the user message to chat history
-            if st.session_state.chat_history is None:
-                # Initialize chat history with system message if it doesn't exist
-                st.session_state.chat_history = [
-                    {"role": "system", "content": DATA_MANAGEMENT_PROMPT}
-                ]
-            
-            st.session_state.chat_history.append({"role": "user", "content": user_message})
-            
-            # We need a proper assistant response with tool_calls before we can add a tool message
-            # First, create a simulated assistant message with a proper tool call
-            projects_call_id = f"projects_call_{hub_id[:8]}"
-            assistant_message = {
-                "role": "assistant",
-                "content": f"I'll get the projects for the hub {hub_name}.",
-                "tool_calls": [
-                    {
-                        "id": projects_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": "get_projects",
-                            "arguments": json.dumps({"hub_id": hub_id})
-                        }
-                    }
-                ]
-            }
-            
-            # Add the simulated assistant message to chat history
-            st.session_state.chat_history.append(assistant_message)
-            
-            # Now call the API
-            projects_result = get_projects(hub_id)
-            
-            # Log API call
-            log_api_call("get_projects", {"hub_id": hub_id}, projects_result)
-            
-            if "error" in projects_result:
-                # Handle error
-                assistant_message = f"I encountered an error: {projects_result['error']}"
-                st.session_state.messages.append({"role": "assistant", "content": assistant_message})
-                update_step_status(selection_step, "error", f"Error fetching projects: {projects_result['error']}")
-            else:
-                # Store projects in session state
-                st.session_state.current_data["projects"] = projects_result
-                
-                # Add the tool response to chat history (now properly following a message with tool_calls)
-                tool_message = {
-                    "role": "tool",
-                    "tool_call_id": projects_call_id,
-                    "name": "get_projects",
-                    "content": json.dumps(projects_result)
-                }
-                st.session_state.chat_history.append(tool_message)
-                
-                # Get response from OpenAI about the projects
-                try:
-                    # Format the messages for OpenAI
-                    formatted_messages = []
-                    for msg in st.session_state.chat_history:
-                        if isinstance(msg, dict):
-                            formatted_messages.append(msg)
-                        else:
-                            # Convert from object to dict if needed
-                            msg_dict = {"role": msg.role}
-                            
-                            if hasattr(msg, 'content') and msg.content is not None:
-                                msg_dict["content"] = msg.content
-                                
-                            if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                                msg_dict["tool_calls"] = [
-                                    {
-                                        "id": tc.id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": tc.function.name,
-                                            "arguments": tc.function.arguments
-                                        }
-                                    } for tc in msg.tool_calls
-                                ]
-                                
-                            if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
-                                msg_dict["tool_call_id"] = msg.tool_call_id
-                                
-                            if hasattr(msg, 'name') and msg.name:
-                                msg_dict["name"] = msg.name
-                                
-                            formatted_messages.append(msg_dict)
-                    
-                    # Call OpenAI API
-                    response = client.chat.completions.create(
-                        model=MODEL_NAME,
-                        messages=formatted_messages,
-                        **MODEL_CONFIG
-                    )
-                    
-                    # Get the assistant's response
-                    assistant_response = response.choices[0].message.content
-                    
-                    # Add the response to chat history
-                    st.session_state.chat_history.append(response.choices[0].message)
-                    
-                    # Add the assistant's response to the UI messages
-                    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-                    
-                    # Analyze if the response contains options to show
-                    options_info = analyze_response_for_options(assistant_response)
-                    if options_info and options_info["has_options"]:
-                        st.session_state.show_options = True
-                        st.session_state.option_type = options_info["option_type"]
-                    else:
-                        st.session_state.show_options = False
-                    
-                    update_step_status(selection_step, "completed", f"Retrieved projects for hub: {hub_name}")
-                    
-                except Exception as e:
-                    error_msg = f"Error getting assistant response: {str(e)}"
-                    log_error(error_msg, e)
-                    st.error(error_msg)
-                    update_step_status(selection_step, "error", error_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": f"I encountered an error: {str(e)}"})
-        except Exception as e:
-            error_msg = f"Error processing hub selection: {str(e)}"
-            log_error(error_msg, e)
-            st.error(error_msg)
-            update_step_status(selection_step, "error", error_msg)
-            st.session_state.messages.append({"role": "assistant", "content": f"I encountered an error: {str(e)}"})
-
-def handle_project_selection(project_id, project_name):
-    """Handle project selection from UI"""
-    # Create a user message for the selection
-    user_message = f"I select Project: {project_name} (ID: {project_id})"
-    st.session_state.messages.append({"role": "user", "content": user_message})
-    
-    # Log the project selection as a processing step
-    selection_step = log_processing_step("selection", f"User selected project: {project_name}")
-    
-    with st.spinner("Processing..."):
-        try:
-            # Add the user message to chat history
-            if st.session_state.chat_history is None:
-                # Initialize chat history with system message if it doesn't exist
-                st.session_state.chat_history = [
-                    {"role": "system", "content": DATA_MANAGEMENT_PROMPT}
-                ]
-            
-            st.session_state.chat_history.append({"role": "user", "content": user_message})
-            
-            # We need a proper assistant response with tool_calls before we can add a tool message
-            # First, create a simulated assistant message with a proper tool call
-            items_call_id = f"items_call_{project_id[:8]}"
-            assistant_message = {
-                "role": "assistant",
-                "content": f"I'll get the items for the project {project_name}.",
-                "tool_calls": [
-                    {
-                        "id": items_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": "get_items",
-                            "arguments": json.dumps({"project_id": project_id})
-                        }
-                    }
-                ]
-            }
-            
-            # Add the simulated assistant message to chat history
-            st.session_state.chat_history.append(assistant_message)
-            
-            # Now call the API
-            items_result = get_items(project_id)
-            
-            # Log API call
-            log_api_call("get_items", {"project_id": project_id}, items_result)
-            
-            if "error" in items_result:
-                # Handle error
-                assistant_message = f"I encountered an error: {items_result['error']}"
-                st.session_state.messages.append({"role": "assistant", "content": assistant_message})
-                update_step_status(selection_step, "error", f"Error fetching items: {items_result['error']}")
-            else:
-                # Store items in session state
-                st.session_state.current_data["items"] = items_result
-                
-                # Add the tool response to chat history (now properly following a message with tool_calls)
-                tool_message = {
-                    "role": "tool",
-                    "tool_call_id": items_call_id,
-                    "name": "get_items",
-                    "content": json.dumps(items_result)
-                }
-                st.session_state.chat_history.append(tool_message)
-                
-                # Get response from OpenAI about the items
-                try:
-                    # Format the messages for OpenAI
-                    formatted_messages = []
-                    for msg in st.session_state.chat_history:
-                        if isinstance(msg, dict):
-                            formatted_messages.append(msg)
-                        else:
-                            # Convert from object to dict if needed
-                            msg_dict = {"role": msg.role}
-                            
-                            if hasattr(msg, 'content') and msg.content is not None:
-                                msg_dict["content"] = msg.content
-                                
-                            if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                                msg_dict["tool_calls"] = [
-                                    {
-                                        "id": tc.id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": tc.function.name,
-                                            "arguments": tc.function.arguments
-                                        }
-                                    } for tc in msg.tool_calls
-                                ]
-                                
-                            if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
-                                msg_dict["tool_call_id"] = msg.tool_call_id
-                                
-                            if hasattr(msg, 'name') and msg.name:
-                                msg_dict["name"] = msg.name
-                                
-                            formatted_messages.append(msg_dict)
-                    
-                    # Call OpenAI API
-                    response = client.chat.completions.create(
-                        model=MODEL_NAME,
-                        messages=formatted_messages,
-                        **MODEL_CONFIG
-                    )
-                    
-                    # Get the assistant's response
-                    assistant_response = response.choices[0].message.content
-                    
-                    # Add the response to chat history
-                    st.session_state.chat_history.append(response.choices[0].message)
-                    
-                    # Add the assistant's response to the UI messages
-                    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-                    
-                    # Analyze if the response contains options to show
-                    options_info = analyze_response_for_options(assistant_response)
-                    if options_info and options_info["has_options"]:
-                        st.session_state.show_options = True
-                        st.session_state.option_type = options_info["option_type"]
-                    else:
-                        st.session_state.show_options = False
-                    
-                    update_step_status(selection_step, "completed", f"Retrieved items for project: {project_name}")
-                    
-                except Exception as e:
-                    error_msg = f"Error getting assistant response: {str(e)}"
-                    log_error(error_msg, e)
-                    st.error(error_msg)
-                    update_step_status(selection_step, "error", error_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": f"I encountered an error: {str(e)}"})
-        except Exception as e:
-            error_msg = f"Error processing project selection: {str(e)}"
-            log_error(error_msg, e)
-            st.error(error_msg)
-            update_step_status(selection_step, "error", error_msg)
-            st.session_state.messages.append({"role": "assistant", "content": f"I encountered an error: {str(e)}"})
-
-def handle_item_selection(item_id, project_id, item_name):
-    """Handle item selection from UI"""
-    # Create a user message for the selection
-    user_message = f"I select Item: {item_name} (ID: {item_id})"
-    st.session_state.messages.append({"role": "user", "content": user_message})
-    
-    # Log the item selection as a processing step
-    selection_step = log_processing_step("selection", f"User selected item: {item_name}")
-    
-    with st.spinner("Processing..."):
-        try:
-            # Add the user message to chat history
-            if st.session_state.chat_history is None:
-                # Initialize chat history with system message if it doesn't exist
-                st.session_state.chat_history = [
-                    {"role": "system", "content": DATA_MANAGEMENT_PROMPT}
-                ]
-            
-            st.session_state.chat_history.append({"role": "user", "content": user_message})
-            
-            # We need a proper assistant response with tool_calls before we can add a tool message
-            # First, create a simulated assistant message with a proper tool call
-            versions_call_id = f"versions_call_{item_id[:8]}"
-            assistant_message = {
-                "role": "assistant",
-                "content": f"I'll get the versions for the item {item_name}.",
-                "tool_calls": [
-                    {
-                        "id": versions_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": "get_versions",
-                            "arguments": json.dumps({"project_id": project_id, "item_id": item_id})
-                        }
-                    }
-                ]
-            }
-            
-            # Add the simulated assistant message to chat history
-            st.session_state.chat_history.append(assistant_message)
-            
-            # Now call the API
-            versions_result = get_versions(project_id, item_id)
-            
-            # Log API call
-            log_api_call("get_versions", {"project_id": project_id, "item_id": item_id}, versions_result)
-            
-            if "error" in versions_result:
-                # Handle error
-                assistant_message = f"I encountered an error: {versions_result['error']}"
-                st.session_state.messages.append({"role": "assistant", "content": assistant_message})
-                update_step_status(selection_step, "error", f"Error fetching versions: {versions_result['error']}")
-            else:
-                # Store versions in session state
-                st.session_state.current_data["versions"] = versions_result
-                
-                # Add the tool response to chat history (now properly following a message with tool_calls)
-                tool_message = {
-                    "role": "tool",
-                    "tool_call_id": versions_call_id,
-                    "name": "get_versions",
-                    "content": json.dumps(versions_result)
-                }
-                st.session_state.chat_history.append(tool_message)
-                
-                # Get response from OpenAI about the versions
-                try:
-                    # Format the messages for OpenAI
-                    formatted_messages = []
-                    for msg in st.session_state.chat_history:
-                        if isinstance(msg, dict):
-                            formatted_messages.append(msg)
-                        else:
-                            # Convert from object to dict if needed
-                            msg_dict = {"role": msg.role}
-                            
-                            if hasattr(msg, 'content') and msg.content is not None:
-                                msg_dict["content"] = msg.content
-                                
-                            if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                                msg_dict["tool_calls"] = [
-                                    {
-                                        "id": tc.id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": tc.function.name,
-                                            "arguments": tc.function.arguments
-                                        }
-                                    } for tc in msg.tool_calls
-                                ]
-                                
-                            if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
-                                msg_dict["tool_call_id"] = msg.tool_call_id
-                                
-                            if hasattr(msg, 'name') and msg.name:
-                                msg_dict["name"] = msg.name
-                                
-                            formatted_messages.append(msg_dict)
-                    
-                    # Call OpenAI API
-                    response = client.chat.completions.create(
-                        model=MODEL_NAME,
-                        messages=formatted_messages,
-                        **MODEL_CONFIG
-                    )
-                    
-                    # Get the assistant's response
-                    assistant_response = response.choices[0].message.content
-                    
-                    # Add the response to chat history
-                    st.session_state.chat_history.append(response.choices[0].message)
-                    
-                    # Add the assistant's response to the UI messages
-                    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-                    
-                    # Analyze if the response contains options to show
-                    options_info = analyze_response_for_options(assistant_response)
-                    if options_info and options_info["has_options"]:
-                        st.session_state.show_options = True
-                        st.session_state.option_type = options_info["option_type"]
-                    else:
-                        st.session_state.show_options = False
-                    
-                    update_step_status(selection_step, "completed", f"Retrieved versions for item: {item_name}")
-                    
-                except Exception as e:
-                    error_msg = f"Error getting assistant response: {str(e)}"
-                    log_error(error_msg, e)
-                    st.error(error_msg)
-                    update_step_status(selection_step, "error", error_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": f"I encountered an error: {str(e)}"})
-        except Exception as e:
-            error_msg = f"Error processing item selection: {str(e)}"
-            log_error(error_msg, e)
-            st.error(error_msg)
-            update_step_status(selection_step, "error", error_msg)
-            st.session_state.messages.append({"role": "assistant", "content": f"I encountered an error: {str(e)}"})
-
-def display_options():
-    """Display the appropriate options based on the current state"""
-    if not st.session_state.show_options:
-        return
-        
-    if st.session_state.option_type == "hub":
-        display_hub_options()
-    elif st.session_state.option_type == "project":
-        display_project_options()
-    elif st.session_state.option_type == "item":
-        display_item_options()
-    elif st.session_state.option_type == "version":
-        display_version_options()
-
-def display_hub_options():
-    """Display hub options as buttons or a dropdown"""
-    if not st.session_state.current_data["hubs"]:
-        return
-        
-    hubs = st.session_state.current_data["hubs"].get("hubs", [])
-    
-    if len(hubs) == 0:
-        st.info("No hubs available.")
-        return
-        
-    # If we have 5 or fewer hubs, show buttons
-    if len(hubs) <= 5:
-        st.write("#### Select a Hub:")
-        cols = st.columns(len(hubs))
-        
-        for i, hub in enumerate(hubs):
-            with cols[i]:
-                if st.button(hub["name"], key=f"hub_{hub['id']}"):
-                    handle_hub_selection(hub["id"], hub["name"])
-    else:
-        # Otherwise, show a dropdown
-        st.write("#### Select a Hub:")
-        selected_hub = st.selectbox(
-            "Filter and select a hub:",
-            options=range(len(hubs)),
-            format_func=lambda i: hubs[i]["name"]
-        )
-        
-        if st.button("Confirm Hub Selection"):
-            hub = hubs[selected_hub]
-            handle_hub_selection(hub["id"], hub["name"])
-
-def display_project_options():
-    """Display project options as buttons or a dropdown with filter"""
-    if not st.session_state.current_data["projects"]:
-        return
-        
-    projects = st.session_state.current_data["projects"].get("projects", [])
-    
-    if len(projects) == 0:
-        st.info("No projects available.")
-        return
-        
-    # Always use dropdown for projects as they can be numerous
-    st.write("#### Select a Project:")
-    
-    # Add a filter input
-    filter_text = st.text_input("Filter projects by name:", key="project_filter")
-    
-    # Filter projects if filter text is provided
-    filtered_projects = filter_projects(projects, filter_text)
-    
-    if len(filtered_projects) == 0:
-        st.info("No projects match your filter.")
-        return
-        
-    selected_project = st.selectbox(
-        "Select a project:",
-        options=range(len(filtered_projects)),
-        format_func=lambda i: filtered_projects[i]["name"]
-    )
-    
-    if st.button("Confirm Project Selection"):
-        project = filtered_projects[selected_project]
-        handle_project_selection(project["id"], project["name"])
-
-def display_item_options():
-    """Display item options as a dropdown with filter"""
-    if not st.session_state.current_data["items"]:
-        return
-        
-    items = st.session_state.current_data["items"].get("items", [])
-    project_id = st.session_state.current_data["items"].get("project_id")
-    
-    if len(items) == 0:
-        st.info("No items available.")
-        return
-        
-    st.write("#### Select an Item:")
-    
-    # Add a filter input
-    filter_text = st.text_input("Filter items by name or type:", key="item_filter")
-    
-    # Filter items if filter text is provided
-    filtered_items = filter_items(items, filter_text)
-    
-    if len(filtered_items) == 0:
-        st.info("No items match your filter.")
-        return
-        
-    selected_item = st.selectbox(
-        "Select an item:",
-        options=range(len(filtered_items)),
-        format_func=lambda i: f"{filtered_items[i]['name']} ({filtered_items[i]['file_type']})"
-    )
-    
-    if st.button("Confirm Item Selection"):
-        item = filtered_items[selected_item]
-        handle_item_selection(item["id"], project_id, item["name"])
-
-def display_version_options():
-    """Display version information"""
-    if not st.session_state.current_data["versions"]:
-        return
-        
-    versions = st.session_state.current_data["versions"].get("versions", [])
-    
-    if len(versions) == 0:
-        st.info("No versions available.")
-        return
-        
-    st.write("#### Versions Information:")
-    
-    # Display versions in an expander
-    with st.expander("View All Versions", expanded=True):
-        for version in versions:
-            st.markdown(f"""
-            **Version {version['version_number']}**: {version['name']}  
-            **Created By**: {version['created_by']} on {version['created_date']}  
-            **File Type**: {version['file_type']}  
-            **Size**: {version['storage_size']}  
-            **ID**: {version['id']}
-            """)
-            st.divider()
-
-# Initialize the chat interface
+# Display chat messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+        st.write(message["content"])
 
-# Display processing steps (small but expandable)
-display_processing_steps()
+# Get user input
+prompt = st.chat_input("Ask me about your Autodesk data...")
 
-# Display dynamic options if needed
-if st.session_state.show_options:
-    with st.container():
-        st.divider()
-        display_options()
-        st.divider()
-
-# Handle user input
-if prompt := st.chat_input("Ask a question about your Autodesk resources..."):
-    # Add user message to the chat
+# Process user input
+if prompt:
+    # Add user message to chat
     st.session_state.messages.append({"role": "user", "content": prompt})
-    
-    # Display user message
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.write(prompt)
     
-    # Reset processing steps for new query
-    st.session_state.processing_steps = []
-    
-    # Add initial thinking step
-    thinking_step = log_processing_step("thinking", "Thinking...", "in_progress")
-    
-    # Get the assistant's response
-    with st.spinner("Thinking..."):
+    # Add a placeholder for the assistant response
+    with st.chat_message("assistant"):
+        message_placeholder = st.empty()
+        message_placeholder.markdown("Thinking...")
+        
         try:
-            log_debug(f"Processing user query: '{prompt}'")
-            assistant_response, st.session_state.chat_history, function_calls = process_user_query(
-                prompt, 
-                st.session_state.chat_history
+            # Process the user message
+            response, st.session_state.chat_history = assistant.process_message(
+                prompt, st.session_state.chat_history
             )
             
-            # Update thinking step to completed
-            update_step_status(thinking_step, "completed", "Processed user query")
+            # Update the placeholder with the final response
+            message_placeholder.markdown(response)
             
-            # Display assistant message
-            with st.chat_message("assistant"):
-                st.markdown(assistant_response)
+            # Add assistant message to chat history
+            st.session_state.messages.append({"role": "assistant", "content": response})
             
-            # Add assistant message to the chat
-            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-            
-            # Analyze if the response contains options to show
-            options_info = analyze_response_for_options(assistant_response)
-            
-            # If function calls were requested, execute them
-            if function_calls:
-                log_debug(f"Assistant requested {len(function_calls)} function call(s)")
-                function_step = log_processing_step("function_call", f"Assistant requested {len(function_calls)} function call(s)", "in_progress")
-                st.info(f"The assistant wants to execute {len(function_calls)} function call(s) to get more information.")
-                
-                for call in function_calls:
-                    function_name = call["name"]
-                    function_args = call["args"]
-                    
-                    # Log function call step
-                    call_step = log_processing_step("api_call", f"Executing {function_name} with args: {json.dumps(function_args)}", "in_progress")
-                    
-                    # Create a progress bar for the API call
-                    progress_bar = st.progress(0)
-                    
-                    with st.spinner(f"Executing {function_name} API call..."):
-                        try:
-                            progress_bar.progress(25)
-                            
-                            # First try to execute the real API call
-                            real_result = None
-                            try:
-                                if function_name == "get_hubs":
-                                    log_debug(f"Executing get_hubs API call")
-                                    st.info("Querying Autodesk Platform Services for available hubs...")
-                                    real_result = get_hubs()
-                                elif function_name == "get_projects" and "hub_id" in function_args:
-                                    hub_id = function_args["hub_id"]
-                                    log_debug(f"Executing get_projects API call for hub {hub_id}")
-                                    st.info(f"Querying Autodesk Platform Services for projects in hub {hub_id}...")
-                                    real_result = get_projects(hub_id)
-                                elif function_name == "get_items" and "project_id" in function_args:
-                                    project_id = function_args["project_id"]
-                                    log_debug(f"Executing get_items API call for project {project_id}")
-                                    st.info(f"Querying Autodesk Platform Services for items in project {project_id}...")
-                                    real_result = get_items(project_id)
-                                elif function_name == "get_versions" and "project_id" in function_args and "item_id" in function_args:
-                                    project_id = function_args["project_id"]
-                                    item_id = function_args["item_id"]
-                                    log_debug(f"Executing get_versions API call for item {item_id} in project {project_id}")
-                                    st.info(f"Querying Autodesk Platform Services for versions of item {item_id}...")
-                                    real_result = get_versions(project_id, item_id)
-                                else:
-                                    error_msg = f"Unknown function: {function_name} or missing required arguments"
-                                    log_error(error_msg)
-                                    update_step_status(call_step, "error", error_msg)
-                                    st.error(error_msg)
-                                    continue
-                            except Exception as e:
-                                log_error(f"Error executing real API call: {str(e)}", e)
-                                # Let it fall through to the mock check
-                            
-                            # Check for error in real result or if using mock mode
-                            if st.session_state.use_mock_responses or (real_result and "error" in real_result):
-                                # If real API failed or we're in mock mode, use mock data
-                                if real_result and "error" in real_result:
-                                    error_message = real_result["error"]
-                                    log_debug(f"Real API call failed with error: {error_message}, using mock data")
-                                    update_step_status(call_step, "error", f"API call failed: {error_message}, falling back to mock data")
-                                    
-                                    # Display a warning about using mock data
-                                    st.warning(f"API call failed: {error_message}. Using mock data instead.")
-                                
-                                # Use the mock response if available
-                                if function_name in MOCK_RESPONSES:
-                                    result = MOCK_RESPONSES[function_name].copy()
-                                    
-                                    # Update any IDs from the arguments if necessary
-                                    if function_name == "get_projects" and "hub_id" in function_args:
-                                        result["hub_id"] = function_args["hub_id"]
-                                    elif function_name == "get_items" and "project_id" in function_args:
-                                        result["project_id"] = function_args["project_id"]
-                                    elif function_name == "get_versions" and "project_id" in function_args and "item_id" in function_args:
-                                        result["project_id"] = function_args["project_id"]
-                                        result["item_id"] = function_args["item_id"]
-                                    
-                                    log_debug(f"Using mock data for {function_name}")
-                                    if st.session_state.use_mock_responses:
-                                        update_step_status(call_step, "completed", f"Used mock data for {function_name} (mock mode enabled)")
-                                    st.info("Using mock data for demonstration purposes.")
-                                else:
-                                    # No mock available
-                                    result = {"error": f"No mock data available for {function_name}", "mock": True}
-                                    log_error(f"No mock data available for {function_name}")
-                                    update_step_status(call_step, "error", f"No mock data available for {function_name}")
-                            else:
-                                # Use the real result
-                                result = real_result
-                                update_step_status(call_step, "completed", f"Successfully executed {function_name}")
-                            
-                            # Store the result in session state
-                            if function_name == "get_hubs":
-                                st.session_state.current_data["hubs"] = result
-                            elif function_name == "get_projects":
-                                st.session_state.current_data["projects"] = result
-                            elif function_name == "get_items":
-                                st.session_state.current_data["items"] = result
-                            elif function_name == "get_versions":
-                                st.session_state.current_data["versions"] = result
-                            
-                            # Log the API call
-                            log_api_call(function_name, function_args, result)
-                            
-                            progress_bar.progress(75)
-                            
-                            # Check if there was an error in the result
-                            if "error" in result and not result.get("mock", False):
-                                error_message = result["error"]
-                                
-                                # Check for authentication errors
-                                if "401" in error_message or "unauthorized" in error_message.lower() or "invalid" in error_message.lower() and "token" in error_message.lower():
-                                    auth_error_msg = "Authentication Error: Your Autodesk Platform Services token is invalid or expired."
-                                    log_error(auth_error_msg)
-                                    log_error(f"API Error Details: {error_message}")
-                                    update_step_status(call_step, "error", auth_error_msg)
-                                    
-                                    # Create a persistent error message display
-                                    st.error(auth_error_msg)
-                                    st.error("Please update your APS_AUTH_TOKEN environment variable with a valid token.")
-                                    
-                                    # Suggest enabling mock mode
-                                    st.warning("You can enable mock data in the sidebar to continue working without a valid token.")
-                                else:
-                                    log_error(f"API Error: {error_message}")
-                                    update_step_status(call_step, "error", f"API Error: {error_message}")
-                                    st.error(f"API Error: {error_message}")
-                                
-                                st.warning("The assistant will try to handle this error gracefully.")
-                                
-                                # For clarity in UI, create an error response object to pass to the assistant
-                                if not st.session_state.use_mock_responses:  # Only do this if we're not already using mock data
-                                    result = {
-                                        "error": error_message,
-                                        "function": function_name,
-                                        "status": "failed",
-                                        "params": function_args
-                                    }
-                            else:
-                                # Show result summary
-                                result_type = ""
-                                count = result.get("count", 0)
-                                
-                                if function_name == "get_hubs":
-                                    result_type = "hubs"
-                                elif function_name == "get_projects":
-                                    result_type = "projects"
-                                elif function_name == "get_items":
-                                    result_type = "items"
-                                elif function_name == "get_versions":
-                                    result_type = "versions"
-                                
-                                success_msg = f"Successfully retrieved {count} {result_type}!"
-                                if st.session_state.use_mock_responses or result.get("mock", False):
-                                    success_msg += " (mock data)"
-                                log_debug(success_msg)
-                                st.success(success_msg)
-                            
-                                # Process the function result
-                                process_step = log_processing_step("processing", f"Processing API response for {function_name}", "in_progress")
-                                log_debug(f"Processing API response for {function_name} with assistant")
-                                st.info("Processing API response with the assistant...")
-                                
-                                try:
-                                    new_response, st.session_state.chat_history = process_function_result(
-                                        st.session_state.chat_history,
-                                        function_name,
-                                        function_args,
-                                        result
-                                    )
-                                    
-                                    progress_bar.progress(100)
-                                    update_step_status(process_step, "completed", f"Processed {function_name} results")
-                                    
-                                    # Update the assistant's response
-                                    with st.chat_message("assistant"):
-                                        st.markdown(new_response)
-                                    
-                                    # Replace the last assistant message
-                                    st.session_state.messages[-1] = {"role": "assistant", "content": new_response}
-                                    
-                                    # Check if we should show options
-                                    options_info = analyze_response_for_options(new_response)
-                                    log_debug(f"Updated assistant response with {function_name} results")
-                                except Exception as e:
-                                    error_msg = f"Error processing function result: {str(e)}"
-                                    log_error(error_msg, e)
-                                    update_step_status(process_step, "error", error_msg)
-                                    st.error(error_msg)
-                                    # Create persistent debug info with traceback
-                                    with st.expander("Error details", expanded=True):
-                                        import traceback
-                                        st.code(traceback.format_exc(), language="python")
-                        except Exception as e:
-                            error_msg = f"Error executing {function_name}: {str(e)}"
-                            log_error(error_msg, e)
-                            update_step_status(call_step, "error", error_msg)
-                            st.error(error_msg)
-                            # Create persistent debug info with traceback
-                            with st.expander("Error details", expanded=True):
-                                import traceback
-                                st.code(traceback.format_exc(), language="python")
-                
-                # Update the function calls step to completed
-                update_step_status(function_step, "completed", f"Completed {len(function_calls)} function call(s)")
-            
-            # Update option display state based on the response
-            if options_info and options_info["has_options"]:
-                st.session_state.show_options = True
-                st.session_state.option_type = options_info["option_type"]
-                log_debug(f"Options detected in response: {options_info['option_type']}")
-            else:
-                st.session_state.show_options = False
-                
         except Exception as e:
-            error_msg = f"Error processing query: {str(e)}"
-            log_error(error_msg, e)
-            if 'thinking_step' in locals():
-                update_step_status(thinking_step, "error", error_msg)
-            st.error(error_msg)
-            # Ensure chat history doesn't get corrupted
-            if len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "user":
-                st.session_state.messages.append({"role": "assistant", 
-                                                 "content": f"I'm sorry, I encountered an error: {str(e)}. Please try again."})
-                
-    # Force a rerun to show the options
-    st.rerun()
+            error_message = f"Error: {str(e)}"
+            message_placeholder.markdown(error_message)
+            st.session_state.messages.append({"role": "assistant", "content": error_message})
 
-# Sidebar for info
+# Add sidebar with information
 with st.sidebar:
-    st.subheader("About")
+    st.title("About")
     st.markdown("""
-    This chat assistant helps you navigate your Autodesk Platform Services resources.
+    This assistant demonstrates the use of AI function calling to interact with Autodesk Platform Services (APS) APIs.
     
-    You can:
-    * Ask for your available hubs
-    * Get projects for a specific hub
-    * View items in a project
-    * Get version information for items
-    
-    Try asking questions like:
-    * "Show me my hubs"
-    * "List projects for hub XYZ"
-    * "What items are in project ABC?"
-    """)
-    
-    st.divider()
-    
-    # Mock data toggle
-    st.subheader("Settings")
-    mock_data = st.toggle("Use Mock Data", st.session_state.use_mock_responses, 
-                       help="When enabled, mock data will be used instead of real API calls. Useful for testing or when you don't have a valid API token.")
-    if mock_data != st.session_state.use_mock_responses:
-        st.session_state.use_mock_responses = mock_data
-        if mock_data:
-            st.success("Mock data mode enabled. All API calls will return test data.")
-        else:
-            st.warning("Mock data mode disabled. Real API calls will be used.")
-    
-    st.divider()
-    
-    # Debug section in sidebar (collapsible)
-    with st.expander("Debug Information", expanded=False):
-        # Create tabs for different types of logs
-        debug_tab, error_tab, api_tab = st.tabs(["Debug Logs", "Errors", "API Calls"])
-        
-        with debug_tab:
-            st.subheader("Debug Logs")
-            if st.session_state.debug_logs:
-                for log in st.session_state.debug_logs[-30:]:  # Show last 30 logs
-                    st.text(log)
-                if st.button("Clear Debug Logs"):
-                    st.session_state.debug_logs = []
-                    st.rerun()
-            else:
-                st.info("No debug logs yet.")
-                
-        with error_tab:
-            st.subheader("Error Logs")
-            if st.session_state.error_logs:
-                for error in st.session_state.error_logs:
-                    st.text(error)
-                if st.button("Clear Error Logs"):
-                    st.session_state.error_logs = []
-                    st.rerun()
-            else:
-                st.info("No errors logged (that's good!).")
-                
-        with api_tab:
-            st.subheader("API Calls")
-            if st.session_state.api_calls:
-                for i, call in enumerate(reversed(st.session_state.api_calls)):  # Most recent first
-                    # Use a collapsible container with a header instead of an expander
-                    st.markdown(f"### {call['timestamp']} - {call['function']} ({call['status']})")
-                    st.write(f"**Summary:** {call['summary']}")
-                    
-                    # Use columns to organize the content
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write("**Arguments:**")
-                        st.json(call['args'])
-                    with col2:
-                        st.write("**Result:**")
-                        # Show a simplified view of results to avoid excessive content
-                        if "count" in call['details']:
-                            st.write(f"Count: {call['details']['count']}")
-                            st.write("(Expand below for full details)")
-                    
-                    # Allow viewing full details with a button
-                    if st.button(f"Toggle Full Result Details #{i}", key=f"toggle_details_{i}"):
-                        st.json(call['details'])
-                    
-                    # Add a divider between calls
-                    st.divider()
-                
-                if st.button("Clear API Calls"):
-                    st.session_state.api_calls = []
-                    st.rerun()
-            else:
-                st.info("No API calls made yet.")
-    
-    st.divider()
-    
-    # Clear conversation button
-    if st.button("Clear Conversation"):
-        # Clear session state
-        for key in list(st.session_state.keys()):
-            if key not in ["user_info", "sidebar_state", "debug_logs", "error_logs", "api_calls"]:  # Preserve logs
-                del st.session_state[key]
-                
-        # Re-initialize the state variables
-        st.session_state.messages = []
-        st.session_state.chat_history = None
-        st.session_state.current_data = {
-            "hubs": None,
-            "projects": None,
-            "items": None,
-            "versions": None
-        }
-        st.session_state.show_options = False
-        st.session_state.option_type = None
-        st.session_state.processing_steps = []  # Clear processing steps
-        
-        # Display confirmation
-        st.success("Conversation cleared successfully! All history and data have been reset.")
-        log_debug("Conversation cleared by user")
-        
-        # Force a rerun to update the UI
-        st.rerun() 
+    You can ask questions like:
+    - Show me my hubs
+    - List projects in hub abc123
+    - Get items in project xyz789
+    - Show versions of item def456 in project xyz789
+    """) 
