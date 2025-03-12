@@ -326,6 +326,10 @@ class UIHelpers:
                             } for tc in msg.tool_calls
                         ]
                         
+                        # Add required 'type' field for each tool call
+                        for tc in msg_dict["tool_calls"]:
+                            tc["type"] = "function"
+                        
                     if hasattr(msg, 'tool_call_id') and msg.tool_call_id:
                         msg_dict["tool_call_id"] = msg.tool_call_id
                         
@@ -1066,13 +1070,30 @@ with st.sidebar:
         with api_tab:
             st.subheader("API Calls")
             if st.session_state.api_calls:
-                for call in reversed(st.session_state.api_calls):  # Most recent first
-                    with st.expander(f"{call['timestamp']} - {call['function']} ({call['status']})"):
-                        st.write(f"**Summary:** {call['summary']}")
+                for i, call in enumerate(reversed(st.session_state.api_calls)):  # Most recent first
+                    # Use a collapsible container with a header instead of an expander
+                    st.markdown(f"### {call['timestamp']} - {call['function']} ({call['status']})")
+                    st.write(f"**Summary:** {call['summary']}")
+                    
+                    # Use columns to organize the content
+                    col1, col2 = st.columns(2)
+                    with col1:
                         st.write("**Arguments:**")
                         st.json(call['args'])
+                    with col2:
                         st.write("**Result:**")
+                        # Show a simplified view of results to avoid excessive content
+                        if "count" in call['details']:
+                            st.write(f"Count: {call['details']['count']}")
+                            st.write("(Expand below for full details)")
+                    
+                    # Allow viewing full details with a button
+                    if st.button(f"Toggle Full Result Details #{i}", key=f"toggle_details_{i}"):
                         st.json(call['details'])
+                    
+                    # Add a divider between calls
+                    st.divider()
+                
                 if st.button("Clear API Calls"):
                     st.session_state.api_calls = []
                     st.rerun()
