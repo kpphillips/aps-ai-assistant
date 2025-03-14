@@ -4,6 +4,104 @@ import requests
 import json
 from datetime import datetime
 
+class ChatMemory:
+    """
+    Simple class for storing minimal chat history and state.
+    Maintains a record of interactions and API call results.
+    """
+    
+    def __init__(self):
+        """Initialize an empty chat memory"""
+        self.interactions = []
+        self.current_state = {
+            "selected_hub": None,
+            "selected_project": None,
+            "selected_item": None,
+            "last_api_call": None,
+            "last_api_result": None
+        }
+    
+    def add_interaction(self, user_query, intent, function_name=None, function_args=None, result=None):
+        """
+        Add a new interaction to the memory
+        
+        Args:
+            user_query (str): The user's original query
+            intent (str): A short description of what the assistant understood
+            function_name (str, optional): The name of the function called
+            function_args (dict, optional): The arguments passed to the function
+            result (dict, optional): The result of the function call
+        """
+        interaction = {
+            "timestamp": datetime.now().isoformat(),
+            "user_query": user_query,
+            "intent": intent,
+            "function_called": function_name,
+            "function_args": function_args,
+            "result_summary": self._summarize_result(result) if result else None
+        }
+        
+        self.interactions.append(interaction)
+        
+        # Update current state based on function call
+        if function_name and result and (not isinstance(result, dict) or not result.get("error")):
+            self.current_state["last_api_call"] = function_name
+            self.current_state["last_api_result"] = result
+            
+            # Update state based on specific function calls
+            if function_name == "get_projects" and function_args:
+                self.current_state["selected_hub"] = function_args.get("hub_id")
+            elif function_name == "get_items" and function_args:
+                self.current_state["selected_project"] = function_args.get("project_id")
+            elif function_name == "get_versions" and function_args:
+                self.current_state["selected_project"] = function_args.get("project_id")
+                self.current_state["selected_item"] = function_args.get("item_id")
+    
+    def _summarize_result(self, result):
+        """Create a minimal summary of an API result"""
+        if not result or not isinstance(result, dict):
+            return "No result or invalid result format"
+        
+        # Check for error
+        if "error" in result:
+            return f"Error: {result['error']}"
+        
+        # Summarize based on result type
+        if "hubs" in result:
+            return f"Found {result.get('count', 0)} hubs"
+        elif "projects" in result:
+            return f"Found {result.get('count', 0)} projects for hub {result.get('hub_id', 'unknown')}"
+        elif "items" in result:
+            return f"Found {result.get('count', 0)} items for project {result.get('project_id', 'unknown')}"
+        elif "versions" in result:
+            return f"Found {result.get('count', 0)} versions for item {result.get('item_id', 'unknown')}"
+        
+        return "Result received but format unknown"
+    
+    def get_recent_interactions(self, count=5):
+        """Get the most recent interactions"""
+        return self.interactions[-count:] if self.interactions else []
+    
+    def get_current_state(self):
+        """Get the current state"""
+        return self.current_state
+    
+    def get_state_summary(self):
+        """Get a text summary of the current state"""
+        state = self.current_state
+        summary = []
+        
+        if state["selected_hub"]:
+            summary.append(f"Selected hub: {state['selected_hub']}")
+        if state["selected_project"]:
+            summary.append(f"Selected project: {state['selected_project']}")
+        if state["selected_item"]:
+            summary.append(f"Selected item: {state['selected_item']}")
+        if state["last_api_call"]:
+            summary.append(f"Last API call: {state['last_api_call']}")
+        
+        return " | ".join(summary) if summary else "No state information available"
+
 class AutodeskAPIHelper:
     """
     Class for handling Autodesk Platform Services (APS) API calls.
@@ -299,3 +397,52 @@ def get_view_object_properties(urn: str, model_view_id: str):
     """Retrieve properties for objects in a specific view of a model."""
     # To be implemented in the future
     return
+
+# Create a global instance of the ChatMemory class
+_chat_memory = ChatMemory()
+
+# Expose the chat memory instance through functions
+def get_chat_memory():
+    return _chat_memory
+
+def add_interaction(user_query, intent, function_name=None, function_args=None, result=None):
+    """
+    Add an interaction to the chat memory.
+    If result is None, this is considered a "pre-execution" entry.
+    If result is provided, this updates the existing entry or creates a new one.
+    """
+    # If we have a result, try to update an existing entry first
+    if result is not None and _chat_memory.interactions:
+        # Look for a matching pre-execution entry (same function, args, no result)
+        for interaction in reversed(_chat_memory.interactions):
+            if (interaction["function_called"] == function_name and 
+                interaction["function_args"] == function_args and
+                interaction["result_summary"] is None):
+                # Update this entry instead of creating a new one
+                interaction["result_summary"] = _chat_memory._summarize_result(result)
+                # Update the current state
+                if function_name and (not isinstance(result, dict) or not result.get("error")):
+                    _chat_memory.current_state["last_api_call"] = function_name
+                    _chat_memory.current_state["last_api_result"] = result
+                    
+                    # Update state based on specific function calls
+                    if function_name == "get_projects" and function_args:
+                        _chat_memory.current_state["selected_hub"] = function_args.get("hub_id")
+                    elif function_name == "get_items" and function_args:
+                        _chat_memory.current_state["selected_project"] = function_args.get("project_id")
+                    elif function_name == "get_versions" and function_args:
+                        _chat_memory.current_state["selected_project"] = function_args.get("project_id")
+                        _chat_memory.current_state["selected_item"] = function_args.get("item_id")
+                return
+    
+    # If no matching entry was found or this is a pre-execution entry, add a new one
+    _chat_memory.add_interaction(user_query, intent, function_name, function_args, result)
+
+def get_recent_interactions(count=5):
+    return _chat_memory.get_recent_interactions(count)
+
+def get_current_state():
+    return _chat_memory.get_current_state()
+
+def get_state_summary():
+    return _chat_memory.get_state_summary()

@@ -2,6 +2,7 @@ import streamlit as st
 import sys
 import os
 import json
+import time
 from datetime import datetime
 
 # Add the DataManagement directory to the path
@@ -9,7 +10,7 @@ data_mgmt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__
 sys.path.append(data_mgmt_path)
 
 # Import the Autodesk API helper and OpenAI configuration
-from dm_3_helpers import AutodeskAPIHelper
+from dm_3_helpers import AutodeskAPIHelper, add_interaction, get_state_summary
 from dm_0_config import MODEL_NAME, MODEL_CONFIG
 from dm_1_prompts import DATA_MANAGEMENT_PROMPT
 
@@ -135,8 +136,17 @@ class ChatAssistant:
                 function_name = tool_call.function.name
                 function_args = json.loads(tool_call.function.arguments)
                 
+                # Extract a short intent from the assistant's message
+                intent = self._extract_short_intent(assistant_message.content, function_name)
+                
+                # Store the interaction in memory before executing
+                add_interaction(user_input, intent, function_name, function_args)
+                
                 # Execute the function
                 function_result = self.execute_function(function_name, function_args)
+                
+                # Update the interaction with the result
+                add_interaction(user_input, intent, function_name, function_args, function_result)
                 
                 # Add the function result to chat history
                 chat_history.append({
@@ -157,9 +167,39 @@ class ChatAssistant:
             assistant_response = second_response.choices[0].message
             chat_history.append(assistant_response)
             
-            return assistant_response.content, chat_history
+            # Return both the intent and the final response
+            return intent, assistant_response.content, chat_history
         
-        return assistant_message.content, chat_history
+        # If no function call, just return the assistant's message
+        return None, assistant_message.content, chat_history
+    
+    def _extract_short_intent(self, message, function_name):
+        """Extract a short intent from the assistant's message"""
+        # Default intent based on function name
+        default_intents = {
+            "get_hubs": "Fetching your hubs...",
+            "get_projects": "Retrieving projects...",
+            "get_items": "Getting items from project...",
+            "get_versions": "Fetching version history..."
+        }
+        
+        # Try to extract a short intent from the message
+        if message and "<request_breakdown>" in message and "</request_breakdown>" in message:
+            # Extract the breakdown section
+            breakdown_start = message.find("<request_breakdown>") + len("<request_breakdown>")
+            breakdown_end = message.find("</request_breakdown>")
+            breakdown = message[breakdown_start:breakdown_end].strip()
+            
+            # Get the first sentence or first 100 characters
+            sentences = breakdown.split('.')
+            if sentences:
+                short_intent = sentences[0].strip()
+                if len(short_intent) > 100:
+                    short_intent = short_intent[:97] + "..."
+                return short_intent
+        
+        # If we couldn't extract a good intent, use the default
+        return default_intents.get(function_name, "Processing your request...")
     
     def execute_function(self, function_name, function_args):
         """Execute a function and return the result"""
@@ -198,6 +238,11 @@ This assistant can help you navigate your Autodesk Platform Services (APS) data.
 Ask questions about your hubs, projects, items, and file versions.
 """)
 
+# Display current state if available
+state_summary = get_state_summary()
+if state_summary != "No state information available":
+    st.info(f"Current context: {state_summary}")
+
 # Display chat messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -220,9 +265,18 @@ if prompt:
         
         try:
             # Process the user message
-            response, st.session_state.chat_history = assistant.process_message(
+            intent, response, st.session_state.chat_history = assistant.process_message(
                 prompt, st.session_state.chat_history
             )
+            
+            # If we have an intent (function was called), show it briefly
+            if intent:
+                message_placeholder.markdown(f"_{intent}_")
+                # Add a small delay to let the user see the intent
+                time.sleep(1.5)  # 1.5 seconds is usually enough to notice but not too long to wait
+            else:
+                # If no function was called, still record the interaction in memory
+                add_interaction(prompt, "General question (no function call)", None, None, None)
             
             # Update the placeholder with the final response
             message_placeholder.markdown(response)
