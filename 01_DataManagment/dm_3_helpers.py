@@ -119,6 +119,14 @@ class AutodeskAPIHelper:
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json"
         }
+        
+        # Simple cache for API responses
+        self.cache = {
+            "hubs": None,
+            "projects": {},  # Dictionary with hub_id as key
+            "items": {},     # Dictionary with project_id as key
+            "versions": {}   # Dictionary with project_id:item_id as key
+        }
     
     def get_hubs(self):
         """
@@ -127,6 +135,11 @@ class AutodeskAPIHelper:
         Returns:
             dict: Formatted hub information with just id and name
         """
+        # Check if we have cached hubs
+        if self.cache["hubs"]:
+            print("\n[API] Using cached hubs data")
+            return self.cache["hubs"]
+            
         print("\n[API] Calling get_hubs endpoint...")
         url = "https://developer.api.autodesk.com/project/v1/hubs"
         response = requests.get(url, headers=self.headers)
@@ -151,6 +164,10 @@ class AutodeskAPIHelper:
                         'count': len(formatted_hubs)
                     }
                     print(f"[API] Successfully retrieved {len(formatted_hubs)} hubs")
+                    
+                    # Cache the result
+                    self.cache["hubs"] = result
+                    
                     return result
                 else:
                     print("[API] Error: No hubs data found in response")
@@ -172,6 +189,11 @@ class AutodeskAPIHelper:
         Returns:
             dict: Formatted project information with just id and name
         """
+        # Check if we have cached projects for this hub
+        if hub_id in self.cache["projects"]:
+            print(f"\n[API] Using cached projects data for hub {hub_id}")
+            return self.cache["projects"][hub_id]
+            
         print(f"\n[API] Calling get_projects endpoint for hub {hub_id}...")
         url = f"https://developer.api.autodesk.com/project/v1/hubs/{hub_id}/projects"
         response = requests.get(url, headers=self.headers)
@@ -197,6 +219,10 @@ class AutodeskAPIHelper:
                         'count': len(formatted_projects)
                     }
                     print(f"[API] Successfully retrieved {len(formatted_projects)} projects for hub {hub_id}")
+                    
+                    # Cache the result
+                    self.cache["projects"][hub_id] = result
+                    
                     return result
                 else:
                     print("[API] Error: No project data found in response")
@@ -208,6 +234,46 @@ class AutodeskAPIHelper:
             print(f"[API] Error response: {response.text}")
             return {"error": f"API request failed with status code {response.status_code}"}
 
+    def filter_projects(self, hub_id: str, prefix: str = None):
+        """
+        Filter projects for a given hub by name prefix.
+        
+        Args:
+            hub_id (str): The ID of the hub
+            prefix (str, optional): Filter projects whose name starts with this prefix
+            
+        Returns:
+            dict: Filtered project information
+        """
+        # First, ensure we have the projects data
+        projects_data = self.get_projects(hub_id)
+        
+        # If there was an error or no projects, return as is
+        if "error" in projects_data or projects_data.get("count", 0) == 0:
+            return projects_data
+            
+        # If no prefix is provided, return all projects
+        if not prefix:
+            return projects_data
+            
+        # Filter projects by prefix
+        filtered_projects = [
+            project for project in projects_data["projects"] 
+            if project["name"].startswith(prefix)
+        ]
+        
+        # Create a new result with filtered projects
+        result = {
+            'hub_id': hub_id,
+            'projects': filtered_projects,
+            'count': len(filtered_projects),
+            'filter_applied': prefix
+        }
+        
+        print(f"[API] Filtered to {len(filtered_projects)} projects starting with '{prefix}'")
+        
+        return result
+
     def get_items(self, project_id: str):
         """
         Retrieve the list of items for a given project.
@@ -218,6 +284,11 @@ class AutodeskAPIHelper:
         Returns:
             dict: Formatted item information including id, name, and file type
         """
+        # Check if we have cached items for this project
+        if project_id in self.cache["items"]:
+            print(f"\n[API] Using cached items data for project {project_id}")
+            return self.cache["items"][project_id]
+            
         print(f"\n[API] Calling get_items endpoint for project {project_id}...")
         url = f"https://developer.api.autodesk.com/data/v1/projects/{project_id}/items"
         response = requests.get(url, headers=self.headers)
@@ -260,6 +331,10 @@ class AutodeskAPIHelper:
                         'count': len(formatted_items)
                     }
                     print(f"[API] Successfully retrieved {len(formatted_items)} items for project {project_id}")
+                    
+                    # Cache the result
+                    self.cache["items"][project_id] = result
+                    
                     return result
                 else:
                     print("[API] Error: No item data found in response")
@@ -282,6 +357,14 @@ class AutodeskAPIHelper:
         Returns:
             dict: Formatted version information with relevant details
         """
+        # Create a composite key for the cache
+        cache_key = f"{project_id}:{item_id}"
+        
+        # Check if we have cached versions for this item
+        if cache_key in self.cache["versions"]:
+            print(f"\n[API] Using cached versions data for project {project_id}, item {item_id}")
+            return self.cache["versions"][cache_key]
+            
         print(f"\n[API] Calling get_versions endpoint for project {project_id}, item {item_id}...")
         url = f"https://developer.api.autodesk.com/data/v1/projects/{project_id}/items/{item_id}/versions"
         response = requests.get(url, headers=self.headers)
@@ -328,6 +411,10 @@ class AutodeskAPIHelper:
                         'count': len(formatted_versions)
                     }
                     print(f"[API] Successfully retrieved {len(formatted_versions)} versions for item {item_id}")
+                    
+                    # Cache the result
+                    self.cache["versions"][cache_key] = result
+                    
                     return result
                 else:
                     print("[API] Error: No version data found in response")
@@ -372,6 +459,9 @@ def get_hubs():
 
 def get_projects(hub_id):
     return _api_helper.get_projects(hub_id)
+
+def filter_projects(hub_id, prefix=None):
+    return _api_helper.filter_projects(hub_id, prefix)
 
 def get_items(project_id):
     return _api_helper.get_items(project_id)

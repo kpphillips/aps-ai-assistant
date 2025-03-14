@@ -2,7 +2,6 @@ import streamlit as st
 import sys
 import os
 import json
-import time
 from datetime import datetime
 
 # Add the DataManagement directory to the path
@@ -10,7 +9,7 @@ data_mgmt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__
 sys.path.append(data_mgmt_path)
 
 # Import the Autodesk API helper and OpenAI configuration
-from dm_3_helpers import AutodeskAPIHelper, add_interaction, get_state_summary
+from dm_3_helpers import AutodeskAPIHelper, add_interaction, get_state_summary, filter_projects
 from dm_0_config import MODEL_NAME, MODEL_CONFIG
 from dm_1_prompts import DATA_MANAGEMENT_PROMPT
 
@@ -61,6 +60,27 @@ class ChatAssistant:
                             }
                         },
                         "required": ["hub_id"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "filter_projects",
+                    "description": "Filters projects from a specified hub by name prefix",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "hub_id": {
+                                "type": "string",
+                                "description": "The ID of the hub to filter projects from"
+                            },
+                            "prefix": {
+                                "type": "string",
+                                "description": "The prefix to filter project names by"
+                            }
+                        },
+                        "required": ["hub_id", "prefix"]
                     }
                 }
             },
@@ -179,6 +199,7 @@ class ChatAssistant:
         default_intents = {
             "get_hubs": "Fetching your hubs...",
             "get_projects": "Retrieving projects...",
+            "filter_projects": "Filtering projects...",
             "get_items": "Getting items from project...",
             "get_versions": "Fetching version history..."
         }
@@ -209,6 +230,10 @@ class ChatAssistant:
             elif function_name == "get_projects":
                 hub_id = function_args["hub_id"]
                 return self.api_helper.get_projects(hub_id)
+            elif function_name == "filter_projects":
+                hub_id = function_args["hub_id"]
+                prefix = function_args["prefix"]
+                return self.api_helper.filter_projects(hub_id, prefix)
             elif function_name == "get_items":
                 project_id = function_args["project_id"]
                 return self.api_helper.get_items(project_id)
@@ -272,8 +297,6 @@ if prompt:
             # If we have an intent (function was called), show it briefly
             if intent:
                 message_placeholder.markdown(f"_{intent}_")
-                # Add a small delay to let the user see the intent
-                time.sleep(1.5)  # 1.5 seconds is usually enough to notice but not too long to wait
             else:
                 # If no function was called, still record the interaction in memory
                 add_interaction(prompt, "General question (no function call)", None, None, None)
