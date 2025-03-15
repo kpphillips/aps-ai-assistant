@@ -869,6 +869,7 @@ def get_versions(project_id, item_id):
 def format_file_size(size_in_bytes):
     return _api_helper.format_file_size(size_in_bytes)
 
+# Model Derivative APIs (Stubs for future implementation)
 def get_model_views(version_urn):
     """
     Retrieve the list of views (metadata) for a given model version.
@@ -908,15 +909,7 @@ def get_view_objects(version_urn, view_guid):
     return _api_helper.get_view_objects(version_urn, view_guid)
 
 # Model Derivative APIs (Stubs for future implementation)
-def get_Model_Views(urn: str):
-    """Retrieve the viewables (model views) available for a model."""
-    # To be implemented in the future
-    return
 
-def get_view_object_properties(urn: str, model_view_id: str):
-    """Retrieve properties for objects in a specific view of a model."""
-    # To be implemented in the future
-    return
 
 # Create a global instance of the ChatMemory class
 _chat_memory = ChatMemory()

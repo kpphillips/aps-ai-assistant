@@ -121,6 +121,65 @@ class ChatAssistant:
                         "required": ["project_id", "item_id"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_model_views",
+                    "description": "Retrieves the list of views (metadata) for a given model version",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "version_urn": {
+                                "type": "string",
+                                "description": "The URN of the version to retrieve views for"
+                            }
+                        },
+                        "required": ["version_urn"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_view_properties",
+                    "description": "Retrieves properties for a specific view of a model",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "version_urn": {
+                                "type": "string",
+                                "description": "The URN of the version containing the view"
+                            },
+                            "view_guid": {
+                                "type": "string",
+                                "description": "The GUID of the view to retrieve properties for"
+                            }
+                        },
+                        "required": ["version_urn", "view_guid"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_view_objects",
+                    "description": "Retrieves the object hierarchy for a specific view of a model",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "version_urn": {
+                                "type": "string",
+                                "description": "The URN of the version containing the view"
+                            },
+                            "view_guid": {
+                                "type": "string",
+                                "description": "The GUID of the view to retrieve objects for"
+                            }
+                        },
+                        "required": ["version_urn", "view_guid"]
+                    }
+                }
             }
         ]
     
@@ -201,7 +260,10 @@ class ChatAssistant:
             "get_projects": "Retrieving projects...",
             "filter_projects": "Filtering projects...",
             "get_items": "Getting items from project...",
-            "get_versions": "Fetching version history..."
+            "get_versions": "Fetching version history...",
+            "get_model_views": "Retrieving model views...",
+            "get_view_properties": "Fetching view properties...",
+            "get_view_objects": "Retrieving object hierarchy..."
         }
         
         # Try to extract a short intent from the message
@@ -241,6 +303,17 @@ class ChatAssistant:
                 project_id = function_args["project_id"]
                 item_id = function_args["item_id"]
                 return self.api_helper.get_versions(project_id, item_id)
+            elif function_name == "get_model_views":
+                version_urn = function_args["version_urn"]
+                return self.api_helper.get_model_views(version_urn)
+            elif function_name == "get_view_properties":
+                version_urn = function_args["version_urn"]
+                view_guid = function_args["view_guid"]
+                return self.api_helper.get_view_properties(version_urn, view_guid)
+            elif function_name == "get_view_objects":
+                version_urn = function_args["version_urn"]
+                view_guid = function_args["view_guid"]
+                return self.api_helper.get_view_objects(version_urn, view_guid)
             else:
                 return {"error": f"Unknown function: {function_name}"}
         except Exception as e:
@@ -323,4 +396,7 @@ with st.sidebar:
     - List projects in hub abc123
     - Get items in project xyz789
     - Show versions of item def456 in project xyz789
+    - Get model views for version urn:adsk.wipprod:fs.file:vf.abc123
+    - Show properties for view guid123 in version urn:adsk.wipprod:fs.file:vf.abc123
+    - Get object hierarchy for view guid123 in version urn:adsk.wipprod:fs.file:vf.abc123
     """) 
