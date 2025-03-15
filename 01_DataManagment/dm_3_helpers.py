@@ -32,6 +32,8 @@ class ChatMemory:
             function_args (dict, optional): The arguments passed to the function
             result (dict, optional): The result of the function call
         """
+        print(f"[MEMORY] ChatMemory.add_interaction: {function_name} with args {function_args}")
+        
         interaction = {
             "timestamp": datetime.now().isoformat(),
             "user_query": user_query,
@@ -50,12 +52,23 @@ class ChatMemory:
             
             # Update state based on specific function calls
             if function_name == "get_projects" and function_args:
-                self.current_state["selected_hub"] = function_args.get("hub_id")
+                hub_id = function_args.get("hub_id")
+                self.current_state["selected_hub"] = hub_id
+                print(f"[MEMORY] ChatMemory: Updated selected_hub to {hub_id}")
+            elif function_name == "filter_projects" and function_args:
+                hub_id = function_args.get("hub_id")
+                self.current_state["selected_hub"] = hub_id
+                print(f"[MEMORY] ChatMemory: Updated selected_hub to {hub_id}")
             elif function_name == "get_items" and function_args:
-                self.current_state["selected_project"] = function_args.get("project_id")
+                project_id = function_args.get("project_id")
+                self.current_state["selected_project"] = project_id
+                print(f"[MEMORY] ChatMemory: Updated selected_project to {project_id}")
             elif function_name == "get_versions" and function_args:
-                self.current_state["selected_project"] = function_args.get("project_id")
-                self.current_state["selected_item"] = function_args.get("item_id")
+                project_id = function_args.get("project_id")
+                item_id = function_args.get("item_id")
+                self.current_state["selected_project"] = project_id
+                self.current_state["selected_item"] = item_id
+                print(f"[MEMORY] ChatMemory: Updated selected_project to {project_id} and selected_item to {item_id}")
     
     def _summarize_result(self, result):
         """Create a minimal summary of an API result"""
@@ -70,7 +83,10 @@ class ChatMemory:
         if "hubs" in result:
             return f"Found {result.get('count', 0)} hubs"
         elif "projects" in result:
-            return f"Found {result.get('count', 0)} projects for hub {result.get('hub_id', 'unknown')}"
+            if "filter_applied" in result:
+                return f"Found {result.get('count', 0)} projects starting with '{result.get('filter_applied')}' for hub {result.get('hub_id', 'unknown')}"
+            else:
+                return f"Found {result.get('count', 0)} projects for hub {result.get('hub_id', 'unknown')}"
         elif "items" in result:
             return f"Found {result.get('count', 0)} items for project {result.get('project_id', 'unknown')}"
         elif "versions" in result:
@@ -101,6 +117,18 @@ class ChatMemory:
             summary.append(f"Last API call: {state['last_api_call']}")
         
         return " | ".join(summary) if summary else "No state information available"
+    
+    def dump_state(self):
+        """Dump the current state of the ChatMemory for debugging"""
+        print("\n=== ChatMemory State ===")
+        print(f"Selected hub: {self.current_state['selected_hub']}")
+        print(f"Selected project: {self.current_state['selected_project']}")
+        print(f"Selected item: {self.current_state['selected_item']}")
+        print(f"Last API call: {self.current_state['last_api_call']}")
+        print(f"Recent interactions: {len(self.interactions)}")
+        for i, interaction in enumerate(self.interactions[-5:]):
+            print(f"  {i+1}. {interaction['function_called']} - {interaction['result_summary']}")
+        print("=======================\n")
 
 class AutodeskAPIHelper:
     """
@@ -276,7 +304,12 @@ class AutodeskAPIHelper:
 
     def get_items(self, project_id: str):
         """
-        Retrieve the list of items for a given project.
+        Retrieve the list of items (files) for a given project.
+        
+        This method:
+        1. Gets the top folders for the project
+        2. Finds the "Project Files" folder
+        3. Recursively retrieves all files in that folder and its subfolders
         
         Args:
             project_id (str): The ID of the project
@@ -288,63 +321,159 @@ class AutodeskAPIHelper:
         if project_id in self.cache["items"]:
             print(f"\n[API] Using cached items data for project {project_id}")
             return self.cache["items"][project_id]
-            
-        print(f"\n[API] Calling get_items endpoint for project {project_id}...")
-        url = f"https://developer.api.autodesk.com/data/v1/projects/{project_id}/items"
-        response = requests.get(url, headers=self.headers)
-        print(f"[API] GET Items Response for project {project_id}: {response.status_code}")
         
-        if response.status_code == 200:
-            try:
-                data = response.json()
-                formatted_items = []
-                
-                # Check if 'data' exists in the response
-                if 'data' in data:
-                    for item in data['data']:
-                        # Extract file type and additional attributes if available
-                        attributes = item.get('attributes', {})
-                        file_type = attributes.get('fileType', 'Unknown')
-                        last_modified = attributes.get('lastModifiedTime', '')
-                        
-                        # Format datetime if it exists
-                        if last_modified:
-                            try:
-                                dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
-                                last_modified = dt.strftime('%Y-%m-%d %H:%M:%S')
-                            except:
-                                # Keep original if parsing fails
-                                pass
-                        
-                        item_info = {
-                            'id': item.get('id', 'Unknown ID'),
-                            'name': attributes.get('displayName', 'Unknown Item'),
-                            'file_type': file_type,
-                            'last_modified': last_modified,
-                            'version_id': attributes.get('versionId', '')
-                        }
-                        formatted_items.append(item_info)
-                    
-                    result = {
-                        'project_id': project_id,
-                        'items': formatted_items,
-                        'count': len(formatted_items)
-                    }
-                    print(f"[API] Successfully retrieved {len(formatted_items)} items for project {project_id}")
-                    
-                    # Cache the result
-                    self.cache["items"][project_id] = result
-                    
-                    return result
-                else:
-                    print("[API] Error: No item data found in response")
-                    return {"error": "No item data found in response", "raw_data": data}
-            except Exception as e:
-                print(f"[API] Error parsing item data: {str(e)}")
-                return {"error": f"Failed to parse item data: {str(e)}", "raw_data": response.text}
+        print(f"\n[API] Retrieving items for project {project_id}...")
+        
+        # We need the hub_id for the top folders endpoint
+        hub_id = None
+        
+        # First, try to get hub_id from the global ChatMemory's current_state
+        if _chat_memory and hasattr(_chat_memory, 'current_state') and _chat_memory.current_state.get("selected_hub"):
+            hub_id = _chat_memory.current_state.get("selected_hub")
+            print(f"[API] Using hub_id {hub_id} from chat memory")
         else:
-            print(f"[API] Error response: {response.text}")
-            return {"error": f"API request failed with status code {response.status_code}"}
+            print("[API] No hub_id found in chat memory")
+        
+        # If not found in chat memory, try to get it from the cache
+        if not hub_id:
+            print("[API] Searching for hub_id in projects cache...")
+            for hub_id_key, projects_data in self.cache["projects"].items():
+                print(f"[API] Checking hub {hub_id_key}...")
+                for project in projects_data.get("projects", []):
+                    if project.get("id") == project_id:
+                        hub_id = hub_id_key
+                        print(f"[API] Found hub_id {hub_id} in cache for project {project_id}")
+                        break
+                if hub_id:
+                    break
+        
+        if not hub_id:
+            print("[API] Error: Could not determine hub_id for the project")
+            return {"error": "Could not determine hub_id for the project. Please list projects for a hub first."}
+        
+        print(f"\n[API] Getting top folders for project {project_id} in hub {hub_id}...")
+        # Get top folders
+        top_folders_url = f"https://developer.api.autodesk.com/project/v1/hubs/{hub_id}/projects/{project_id}/topFolders"
+        top_folders_response = requests.get(top_folders_url, headers=self.headers)
+        
+        if top_folders_response.status_code != 200:
+            print(f"[API] Error getting top folders: {top_folders_response.status_code}")
+            print(f"[API] Response: {top_folders_response.text}")
+            return {"error": f"Failed to get top folders: {top_folders_response.text}"}
+        
+        top_folders_data = top_folders_response.json()
+        project_files_folder = None
+        
+        # Find the "Project Files" folder
+        if 'data' in top_folders_data:
+            print(f"[API] Found {len(top_folders_data['data'])} top folders")
+            for folder in top_folders_data['data']:
+                folder_name = folder.get('attributes', {}).get('name', '').lower()
+                print(f"[API] Checking folder: {folder_name}")
+                if 'project files' in folder_name:
+                    project_files_folder = folder
+                    break
+        
+        if not project_files_folder:
+            print("[API] Error: Could not find 'Project Files' folder in the project")
+            return {"error": "Could not find 'Project Files' folder in the project"}
+        
+        folder_id = project_files_folder.get('id')
+        print(f"[API] Found Project Files folder with ID: {folder_id}")
+        
+        # Now recursively get all files in the Project Files folder
+        all_items = []
+        self._get_folder_contents(project_id, folder_id, all_items)
+        
+        # Format the result
+        result = {
+            'project_id': project_id,
+            'items': all_items,
+            'count': len(all_items)
+        }
+        
+        print(f"[API] Successfully retrieved {len(all_items)} items for project {project_id}")
+        
+        # Cache the result
+        self.cache["items"][project_id] = result
+        
+        return result
+    
+    def _get_folder_contents(self, project_id: str, folder_id: str, all_items: list, depth: int = 0):
+        """
+        Recursively retrieve contents of a folder and its subfolders.
+        
+        Args:
+            project_id (str): The ID of the project
+            folder_id (str): The ID of the folder to get contents from
+            all_items (list): List to append items to (modified in place)
+            depth (int): Current recursion depth (to prevent infinite recursion)
+        """
+        # Prevent too deep recursion
+        if depth > 10:
+            print(f"[API] Warning: Maximum folder depth reached for folder {folder_id}")
+            return
+        
+        indent = "  " * depth  # For prettier logging
+        print(f"{indent}[API] Getting contents of folder {folder_id} (depth: {depth})...")
+        folder_contents_url = f"https://developer.api.autodesk.com/data/v1/projects/{project_id}/folders/{folder_id}/contents"
+        folder_contents_response = requests.get(folder_contents_url, headers=self.headers)
+        
+        if folder_contents_response.status_code != 200:
+            print(f"{indent}[API] Error getting folder contents: {folder_contents_response.status_code}")
+            print(f"{indent}[API] Response: {folder_contents_response.text}")
+            return
+        
+        folder_contents_data = folder_contents_response.json()
+        
+        if 'data' in folder_contents_data:
+            items_count = len(folder_contents_data['data'])
+            print(f"{indent}[API] Found {items_count} items in folder {folder_id}")
+            
+            folders_count = 0
+            files_count = 0
+            
+            for item in folder_contents_data['data']:
+                item_type = item.get('type', '')
+                
+                # If it's a folder, recursively get its contents
+                if item_type == 'folders':
+                    folders_count += 1
+                    subfolder_id = item.get('id')
+                    subfolder_name = item.get('attributes', {}).get('name', 'Unknown Folder')
+                    print(f"{indent}[API] Found subfolder: {subfolder_name} (ID: {subfolder_id})")
+                    self._get_folder_contents(project_id, subfolder_id, all_items, depth + 1)
+                
+                # If it's an item (file), add it to our list
+                elif item_type == 'items':
+                    files_count += 1
+                    attributes = item.get('attributes', {})
+                    item_name = attributes.get('displayName', 'Unknown Item')
+                    
+                    # Format last modified date if it exists
+                    last_modified = attributes.get('lastModifiedTime', '')
+                    if last_modified:
+                        try:
+                            dt = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
+                            last_modified = dt.strftime('%Y-%m-%d %H:%M:%S')
+                        except:
+                            # Keep original if parsing fails
+                            pass
+                    
+                    item_info = {
+                        'id': item.get('id', 'Unknown ID'),
+                        'name': item_name,
+                        'file_type': attributes.get('fileType', 'Unknown'),
+                        'last_modified': last_modified,
+                        'version_id': attributes.get('versionId', '')
+                    }
+                    all_items.append(item_info)
+            
+            print(f"{indent}[API] Processed {folders_count} folders and {files_count} files in folder {folder_id}")
+        else:
+            print(f"{indent}[API] No data found in folder {folder_id}")
+            if 'errors' in folder_contents_data:
+                print(f"{indent}[API] Errors: {folder_contents_data['errors']}")
 
     def get_versions(self, project_id: str, item_id: str):
         """
@@ -501,6 +630,8 @@ def add_interaction(user_query, intent, function_name=None, function_args=None, 
     If result is None, this is considered a "pre-execution" entry.
     If result is provided, this updates the existing entry or creates a new one.
     """
+    print(f"[MEMORY] Adding interaction: {function_name} with args {function_args}")
+    
     # If we have a result, try to update an existing entry first
     if result is not None and _chat_memory.interactions:
         # Look for a matching pre-execution entry (same function, args, no result)
@@ -517,16 +648,48 @@ def add_interaction(user_query, intent, function_name=None, function_args=None, 
                     
                     # Update state based on specific function calls
                     if function_name == "get_projects" and function_args:
-                        _chat_memory.current_state["selected_hub"] = function_args.get("hub_id")
+                        hub_id = function_args.get("hub_id")
+                        _chat_memory.current_state["selected_hub"] = hub_id
+                        print(f"[MEMORY] Updated selected_hub to {hub_id}")
+                    elif function_name == "filter_projects" and function_args:
+                        hub_id = function_args.get("hub_id")
+                        _chat_memory.current_state["selected_hub"] = hub_id
+                        print(f"[MEMORY] Updated selected_hub to {hub_id}")
                     elif function_name == "get_items" and function_args:
-                        _chat_memory.current_state["selected_project"] = function_args.get("project_id")
+                        project_id = function_args.get("project_id")
+                        _chat_memory.current_state["selected_project"] = project_id
+                        print(f"[MEMORY] Updated selected_project to {project_id}")
                     elif function_name == "get_versions" and function_args:
-                        _chat_memory.current_state["selected_project"] = function_args.get("project_id")
-                        _chat_memory.current_state["selected_item"] = function_args.get("item_id")
+                        project_id = function_args.get("project_id")
+                        item_id = function_args.get("item_id")
+                        _chat_memory.current_state["selected_project"] = project_id
+                        _chat_memory.current_state["selected_item"] = item_id
+                        print(f"[MEMORY] Updated selected_project to {project_id} and selected_item to {item_id}")
                 return
     
     # If no matching entry was found or this is a pre-execution entry, add a new one
     _chat_memory.add_interaction(user_query, intent, function_name, function_args, result)
+    
+    # If this is a pre-execution entry (no result), update the current state for certain functions
+    if result is None and function_name:
+        if function_name == "get_projects" and function_args:
+            hub_id = function_args.get("hub_id")
+            _chat_memory.current_state["selected_hub"] = hub_id
+            print(f"[MEMORY] Pre-execution: Updated selected_hub to {hub_id}")
+        elif function_name == "filter_projects" and function_args:
+            hub_id = function_args.get("hub_id")
+            _chat_memory.current_state["selected_hub"] = hub_id
+            print(f"[MEMORY] Pre-execution: Updated selected_hub to {hub_id}")
+        elif function_name == "get_items" and function_args:
+            project_id = function_args.get("project_id")
+            _chat_memory.current_state["selected_project"] = project_id
+            print(f"[MEMORY] Pre-execution: Updated selected_project to {project_id}")
+        elif function_name == "get_versions" and function_args:
+            project_id = function_args.get("project_id")
+            item_id = function_args.get("item_id")
+            _chat_memory.current_state["selected_project"] = project_id
+            _chat_memory.current_state["selected_item"] = item_id
+            print(f"[MEMORY] Pre-execution: Updated selected_project to {project_id} and selected_item to {item_id}")
 
 def get_recent_interactions(count=5):
     return _chat_memory.get_recent_interactions(count)
@@ -536,3 +699,7 @@ def get_current_state():
 
 def get_state_summary():
     return _chat_memory.get_state_summary()
+
+def dump_memory_state():
+    """Dump the current state of the ChatMemory for debugging"""
+    _chat_memory.dump_state()
