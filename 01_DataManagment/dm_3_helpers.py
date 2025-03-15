@@ -2,6 +2,7 @@
 import os
 import requests
 import json
+import base64
 from datetime import datetime
 
 class ChatMemory:
@@ -17,6 +18,7 @@ class ChatMemory:
             "selected_hub": None,
             "selected_project": None,
             "selected_item": None,
+            "selected_view": None,
             "last_api_call": None,
             "last_api_result": None
         }
@@ -91,6 +93,11 @@ class ChatMemory:
             return f"Found {result.get('count', 0)} items for project {result.get('project_id', 'unknown')}"
         elif "versions" in result:
             return f"Found {result.get('count', 0)} versions for item {result.get('item_id', 'unknown')}"
+        elif "views" in result:
+            master_view_name = result.get('master_view', {}).get('name', 'unknown')
+            return f"Found {result.get('count', 0)} views for version {result.get('version_urn', 'unknown')}, master view: {master_view_name}"
+        elif "properties" in result and "collection_count" in result:
+            return f"Found {result.get('collection_count', 0)} collections with {result.get('object_count', 0)} objects for view {result.get('view_guid', 'unknown')}"
         
         return "Result received but format unknown"
     
@@ -113,6 +120,9 @@ class ChatMemory:
             summary.append(f"Selected project: {state['selected_project']}")
         if state["selected_item"]:
             summary.append(f"Selected item: {state['selected_item']}")
+        if state["selected_view"]:
+            view_name = state["selected_view"].get('name', 'Unknown')
+            summary.append(f"Selected view: {view_name}")
         if state["last_api_call"]:
             summary.append(f"Last API call: {state['last_api_call']}")
         
@@ -124,6 +134,10 @@ class ChatMemory:
         print(f"Selected hub: {self.current_state['selected_hub']}")
         print(f"Selected project: {self.current_state['selected_project']}")
         print(f"Selected item: {self.current_state['selected_item']}")
+        if self.current_state['selected_view']:
+            print(f"Selected view: {self.current_state['selected_view'].get('name', 'Unknown')} (GUID: {self.current_state['selected_view'].get('guid', 'Unknown')})")
+        else:
+            print(f"Selected view: None")
         print(f"Last API call: {self.current_state['last_api_call']}")
         print(f"Recent interactions: {len(self.interactions)}")
         for i, interaction in enumerate(self.interactions[-5:]):
@@ -153,7 +167,10 @@ class AutodeskAPIHelper:
             "hubs": None,
             "projects": {},  # Dictionary with hub_id as key
             "items": {},     # Dictionary with project_id as key
-            "versions": {}   # Dictionary with project_id:item_id as key
+            "versions": {},   # Dictionary with project_id:item_id as key
+            "views": {},       # Dictionary with encoded_urn as key
+            "properties": {},   # Dictionary with version_urn:view_guid as key
+            "objects": {}       # Dictionary with encoded_urn:view_guid:objects as key
         }
     
     def get_hubs(self):
@@ -577,6 +594,257 @@ class AutodeskAPIHelper:
         # Return formatted string with up to 2 decimal places
         return f"{size:.2f} {units[i]}"
 
+    def get_model_views(self, version_urn: str):
+        """
+        Retrieve the list of views (metadata) for a given model version.
+        
+        Args:
+            version_urn (str): The URN of the version (e.g., "urn:adsk.wipprod:fs.file:vf.-3ver-faSemSdPmFvD5ZFQ?version=3")
+            
+        Returns:
+            dict: Formatted view information including the master view and all available views
+        """
+        # Convert the version URN to a Base64 URL-safe encoded string
+        try:
+            # Encode the full URN including query parameters
+            encoded_urn = base64.urlsafe_b64encode(version_urn.encode()).decode().rstrip('=')
+            print(f"\n[API] Converted version URN to encoded URN: {encoded_urn}")
+            print(f"[API] Full encoded URN for debugging: {encoded_urn}")
+            print(f"[API] Original URN: {version_urn}")
+        except Exception as e:
+            print(f"[API] Error encoding version URN: {str(e)}")
+            return {"error": f"Failed to encode version URN: {str(e)}"}
+        
+        # Check if we have cached views for this encoded URN
+        if encoded_urn in self.cache["views"]:
+            print(f"\n[API] Using cached views data for encoded URN {encoded_urn}")
+            return self.cache["views"][encoded_urn]
+            
+        print(f"\n[API] Calling get_model_views endpoint for encoded URN {encoded_urn}...")
+        url = f"https://developer.api.autodesk.com/modelderivative/v2/designdata/{encoded_urn}/metadata"
+        response = requests.get(url, headers=self.headers)
+        print(f"[API] GET Model Views Response: {response.status_code}")
+        
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                
+                # Check if 'data' and 'metadata' exist in the response
+                if 'data' in data and 'metadata' in data['data']:
+                    views = data['data']['metadata']
+                    
+                    # Find the master view
+                    master_view = None
+                    for view in views:
+                        if view.get('isMasterView', False):
+                            master_view = view
+                            break
+                    
+                    # If no master view is found, try to find a 3D view
+                    if not master_view:
+                        for view in views:
+                            if view.get('role') == '3d':
+                                master_view = view
+                                break
+                    
+                    # If still no view is found, use the first view
+                    if not master_view and views:
+                        master_view = views[0]
+                    
+                    result = {
+                        'version_urn': version_urn,
+                        'encoded_urn': encoded_urn,
+                        'views': views,
+                        'master_view': master_view,
+                        'count': len(views)
+                    }
+                    print(f"[API] Successfully retrieved {len(views)} views for model")
+                    
+                    # Cache the result
+                    self.cache["views"][encoded_urn] = result
+                    
+                    return result
+                else:
+                    print("[API] Error: No metadata found in response")
+                    return {"error": "No metadata found in response", "raw_data": data}
+            except Exception as e:
+                print(f"[API] Error parsing metadata: {str(e)}")
+                return {"error": f"Failed to parse metadata: {str(e)}", "raw_data": response.text}
+        else:
+            print(f"[API] Error response: {response.text}")
+            return {"error": f"API request failed with status code {response.status_code}"}
+
+    def get_view_properties(self, version_urn: str, view_guid: str):
+        """
+        Retrieve the properties for a specific view of a model.
+        
+        Args:
+            version_urn (str): The URN of the version (e.g., "urn:adsk.wipprod:fs.file:vf.-3ver-faSemSdPmFvD5ZFQ?version=3")
+            view_guid (str): The GUID of the view to get properties for
+            
+        Returns:
+            dict: Formatted property information for the view
+        """
+        # Convert the version URN to a Base64 URL-safe encoded string
+        try:
+            # Encode the full URN including query parameters
+            encoded_urn = base64.urlsafe_b64encode(version_urn.encode()).decode().rstrip('=')
+            print(f"\n[API] Using encoded URN: {encoded_urn} for view properties")
+            print(f"[API] Original URN: {version_urn}")
+        except Exception as e:
+            print(f"[API] Error encoding version URN: {str(e)}")
+            return {"error": f"Failed to encode version URN: {str(e)}"}
+        
+        # Create a composite key for the cache
+        cache_key = f"{encoded_urn}:{view_guid}"
+        
+        # Check if we have cached properties for this view
+        if "properties" in self.cache and cache_key in self.cache["properties"]:
+            print(f"\n[API] Using cached properties data for view {view_guid}")
+            return self.cache["properties"][cache_key]
+            
+        print(f"\n[API] Calling get_view_properties endpoint for view {view_guid}...")
+        url = f"https://developer.api.autodesk.com/modelderivative/v2/designdata/{encoded_urn}/metadata/{view_guid}/properties"
+        response = requests.get(url, headers=self.headers)
+        print(f"[API] GET View Properties Response: {response.status_code}")
+        
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                
+                # Check if 'data' exists in the response
+                if 'data' in data:
+                    properties_data = data['data']
+                    
+                    # Extract collection and object counts
+                    collection_count = len(properties_data.get('collection', []))
+                    object_count = 0
+                    for collection in properties_data.get('collection', []):
+                        object_count += len(collection.get('objects', []))
+                    
+                    result = {
+                        'version_urn': version_urn,
+                        'encoded_urn': encoded_urn,
+                        'view_guid': view_guid,
+                        'properties': properties_data,
+                        'collection_count': collection_count,
+                        'object_count': object_count
+                    }
+                    print(f"[API] Successfully retrieved properties for view {view_guid}")
+                    print(f"[API] Found {collection_count} collections with {object_count} total objects")
+                    
+                    # Ensure the properties cache exists
+                    if "properties" not in self.cache:
+                        self.cache["properties"] = {}
+                    
+                    # Cache the result
+                    self.cache["properties"][cache_key] = result
+                    
+                    return result
+                else:
+                    print("[API] Error: No property data found in response")
+                    return {"error": "No property data found in response", "raw_data": data}
+            except Exception as e:
+                print(f"[API] Error parsing property data: {str(e)}")
+                return {"error": f"Failed to parse property data: {str(e)}", "raw_data": response.text}
+        else:
+            print(f"[API] Error response: {response.text}")
+            return {"error": f"API request failed with status code {response.status_code}"}
+
+    def get_view_objects(self, version_urn: str, view_guid: str):
+        """
+        Retrieve the object hierarchy for a specific view of a model.
+        
+        Args:
+            version_urn (str): The URN of the version (e.g., "urn:adsk.wipprod:fs.file:vf.-3ver-faSemSdPmFvD5ZFQ?version=3")
+            view_guid (str): The GUID of the view to get objects for
+            
+        Returns:
+            dict: Formatted object hierarchy information for the view
+        """
+        # Convert the version URN to a Base64 URL-safe encoded string
+        try:
+            # Encode the full URN including query parameters
+            encoded_urn = base64.urlsafe_b64encode(version_urn.encode()).decode().rstrip('=')
+            print(f"\n[API] Using encoded URN: {encoded_urn} for view objects")
+            print(f"[API] Original URN: {version_urn}")
+        except Exception as e:
+            print(f"[API] Error encoding version URN: {str(e)}")
+            return {"error": f"Failed to encode version URN: {str(e)}"}
+        
+        # Create a composite key for the cache
+        cache_key = f"{encoded_urn}:{view_guid}:objects"
+        
+        # Check if we have cached objects for this view
+        if "objects" in self.cache and cache_key in self.cache["objects"]:
+            print(f"\n[API] Using cached objects data for view {view_guid}")
+            return self.cache["objects"][cache_key]
+            
+        print(f"\n[API] Calling get_view_objects endpoint for view {view_guid}...")
+        url = f"https://developer.api.autodesk.com/modelderivative/v2/designdata/{encoded_urn}/metadata/{view_guid}"
+        response = requests.get(url, headers=self.headers)
+        print(f"[API] GET View Objects Response: {response.status_code}")
+        
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                
+                # Check if 'data' exists in the response
+                if 'data' in data:
+                    objects_data = data['data']
+                    
+                    # Count the total number of objects
+                    object_count = self._count_objects(objects_data.get('objects', []))
+                    
+                    result = {
+                        'version_urn': version_urn,
+                        'encoded_urn': encoded_urn,
+                        'view_guid': view_guid,
+                        'objects': objects_data,
+                        'object_count': object_count
+                    }
+                    print(f"[API] Successfully retrieved objects for view {view_guid}")
+                    print(f"[API] Found {object_count} total objects in the hierarchy")
+                    
+                    # Ensure the objects cache exists
+                    if "objects" not in self.cache:
+                        self.cache["objects"] = {}
+                    
+                    # Cache the result
+                    self.cache["objects"][cache_key] = result
+                    
+                    return result
+                else:
+                    print("[API] Error: No object data found in response")
+                    return {"error": "No object data found in response", "raw_data": data}
+            except Exception as e:
+                print(f"[API] Error parsing object data: {str(e)}")
+                return {"error": f"Failed to parse object data: {str(e)}", "raw_data": response.text}
+        else:
+            print(f"[API] Error response: {response.text}")
+            return {"error": f"API request failed with status code {response.status_code}"}
+    
+    def _count_objects(self, objects_list):
+        """
+        Recursively count the total number of objects in the hierarchy.
+        
+        Args:
+            objects_list (list): List of objects to count
+            
+        Returns:
+            int: Total number of objects
+        """
+        if not objects_list:
+            return 0
+            
+        count = len(objects_list)
+        
+        # Recursively count nested objects
+        for obj in objects_list:
+            if isinstance(obj, dict) and 'objects' in obj:
+                count += self._count_objects(obj.get('objects', []))
+                
+        return count
 
 # Create a global instance of the helper class for backward compatibility
 # with code that uses the module-level functions
@@ -601,14 +869,47 @@ def get_versions(project_id, item_id):
 def format_file_size(size_in_bytes):
     return _api_helper.format_file_size(size_in_bytes)
 
+def get_model_views(version_urn):
+    """
+    Retrieve the list of views (metadata) for a given model version.
+    
+    Args:
+        version_urn (str): The URN of the version
+        
+    Returns:
+        dict: Formatted view information including the master view and all available views
+    """
+    return _api_helper.get_model_views(version_urn)
+
+def get_view_properties(version_urn, view_guid):
+    """
+    Retrieve the properties for a specific view of a model.
+    
+    Args:
+        version_urn (str): The URN of the version
+        view_guid (str): The GUID of the view to get properties for
+        
+    Returns:
+        dict: Formatted property information for the view
+    """
+    return _api_helper.get_view_properties(version_urn, view_guid)
+
+def get_view_objects(version_urn, view_guid):
+    """
+    Retrieve the object hierarchy for a specific view of a model.
+    
+    Args:
+        version_urn (str): The URN of the version (e.g., "urn:adsk.wipprod:fs.file:vf.-3ver-faSemSdPmFvD5ZFQ?version=3")
+        view_guid (str): The GUID of the view to get objects for
+        
+    Returns:
+        dict: Formatted object hierarchy information for the view
+    """
+    return _api_helper.get_view_objects(version_urn, view_guid)
+
 # Model Derivative APIs (Stubs for future implementation)
 def get_Model_Views(urn: str):
     """Retrieve the viewables (model views) available for a model."""
-    # To be implemented in the future
-    return
-
-def get_view_objects(urn: str, model_view_id: str):
-    """Retrieve object data for a specific view of a model."""
     # To be implemented in the future
     return
 
@@ -665,6 +966,16 @@ def add_interaction(user_query, intent, function_name=None, function_args=None, 
                         _chat_memory.current_state["selected_project"] = project_id
                         _chat_memory.current_state["selected_item"] = item_id
                         print(f"[MEMORY] Updated selected_project to {project_id} and selected_item to {item_id}")
+                    elif function_name == "get_model_views" and function_args:
+                        version_urn = function_args.get("version_urn")
+                        if result.get("master_view"):
+                            _chat_memory.current_state["selected_view"] = result.get("master_view")
+                            print(f"[MEMORY] Updated selected_view to {result.get('master_view').get('name', 'Unknown')}")
+                    elif function_name == "get_view_properties" and function_args:
+                        version_urn = function_args.get("version_urn")
+                        view_guid = function_args.get("view_guid")
+                        # We don't update selected_view here as it should already be set by get_model_views
+                        print(f"[MEMORY] Retrieved properties for view {view_guid}")
                 return
     
     # If no matching entry was found or this is a pre-execution entry, add a new one
@@ -690,6 +1001,13 @@ def add_interaction(user_query, intent, function_name=None, function_args=None, 
             _chat_memory.current_state["selected_project"] = project_id
             _chat_memory.current_state["selected_item"] = item_id
             print(f"[MEMORY] Pre-execution: Updated selected_project to {project_id} and selected_item to {item_id}")
+        elif function_name == "get_model_views" and function_args:
+            version_urn = function_args.get("version_urn")
+            print(f"[MEMORY] Pre-execution: Retrieving views for version {version_urn}")
+        elif function_name == "get_view_properties" and function_args:
+            version_urn = function_args.get("version_urn")
+            view_guid = function_args.get("view_guid")
+            print(f"[MEMORY] Pre-execution: Retrieving properties for view {view_guid}")
 
 def get_recent_interactions(count=5):
     return _chat_memory.get_recent_interactions(count)
