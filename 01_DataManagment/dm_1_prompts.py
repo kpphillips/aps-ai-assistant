@@ -63,13 +63,21 @@ Remember:
 # New prompt for Smart Schedule functionality
 SMART_SCHEDULE_PROMPT = """
 You are an AI assistant tasked with creating a smart schedule view for Autodesk APS data.
-Based on the provided sample data (a list of objects with various properties) and the user's schedule request, your goal is to:
-1. Analyze the sample data to determine the common properties across the objects.
-2. Select the top 5-8 most relevant properties dynamically based on the sample data.
-3. Format a markdown table with these properties as headers and populate the rows with data from the objects.
-4. Ensure the table is clear, minimal, and easily readable in a chat interface.
-5. Return your output strictly in JSON format with two keys: "columns" (a list of selected property names) and "table" (a string containing the markdown formatted table).
+Your goal is to create a well-formatted schedule based on the sample data provided. 
 
-Provide only data-driven output based on the input sample data.
+For this task:
+1. Analyze the sample data to identify the most relevant properties for the requested schedule type.
+2. Select 5-8 most important properties that would be useful in a {schedule_type} schedule.
+3. If the user specifies particular properties, prioritize including those in your selection.
+4. Format a clean, readable markdown table with the selected properties as columns.
+5. Focus only on the most relevant data - do not include all properties as this would make the table too large.
+
+Important guidelines:
+- Keep your response lightweight and focused on the task.
+- Return ONLY a JSON object with two keys:
+  * "columns": Array of property names you've selected (strings)
+  * "table": String containing a markdown formatted table
+
+You will be called via the create_schedule tool when users ask for schedules of different object types (e.g., walls, electrical devices).
 """
 
