@@ -13,9 +13,14 @@ from dm_3_helpers import AutodeskAPIHelper, add_interaction, get_state_summary, 
 from dm_0_config import MODEL_NAME, MODEL_CONFIG
 from dm_1_prompts import DATA_MANAGEMENT_PROMPT
 
-# Initialize OpenAI client
-from openai import OpenAI
-client = OpenAI()
+# Import the schedule creator
+from schedule_creator import create_schedule
+
+# Import the OpenAI service wrapper instead of directly initializing the client
+from openai_service import get_openai_client
+
+# Initialize OpenAI client using the service wrapper
+client = get_openai_client()
 
 # Initialize the Autodesk API Helper
 api_helper = AutodeskAPIHelper()
@@ -180,6 +185,30 @@ class ChatAssistant:
                         "required": ["version_urn", "view_guid"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "create_schedule",
+                    "description": "Creates a formatted schedule/table of objects with their properties",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "schedule_type": {
+                                "type": "string",
+                                "description": "The type of objects to include in the schedule (e.g., 'wall', 'electrical device')"
+                            },
+                            "properties": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": "Optional list of specific properties to include in the schedule. If not provided, common properties will be determined automatically."
+                            }
+                        },
+                        "required": ["schedule_type"]
+                    }
+                }
             }
         ]
     
@@ -205,11 +234,27 @@ class ChatAssistant:
         # Get the assistant's message
         assistant_message = response.choices[0].message
         
-        # Add the assistant's message to chat history
-        chat_history.append(assistant_message)
-        
         # Check if the assistant wants to call a function
         if hasattr(assistant_message, 'tool_calls') and assistant_message.tool_calls:
+            # Create a proper assistant message with tool_calls for the chat history
+            assistant_dict = {
+                "role": "assistant",
+                "content": assistant_message.content or "",
+                "tool_calls": [
+                    {
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments
+                        }
+                    } for tool_call in assistant_message.tool_calls
+                ]
+            }
+            
+            # Add the assistant's message to chat history
+            chat_history.append(assistant_dict)
+            
             # Process each tool call
             for tool_call in assistant_message.tool_calls:
                 function_name = tool_call.function.name
@@ -242,15 +287,30 @@ class ChatAssistant:
                 **MODEL_CONFIG
             )
             
-            # Add the new response to chat history
+            # Get the assistant's message and convert to dictionary
             assistant_response = second_response.choices[0].message
-            chat_history.append(assistant_response)
+            assistant_response_dict = {
+                "role": "assistant",
+                "content": assistant_response.content or ""
+            }
+            
+            # Add the new response to chat history
+            chat_history.append(assistant_response_dict)
             
             # Return both the intent and the final response
             return intent, assistant_response.content, chat_history
-        
-        # If no function call, just return the assistant's message
-        return None, assistant_message.content, chat_history
+        else:
+            # If no function call, just add the assistant's message as a dictionary
+            assistant_dict = {
+                "role": "assistant",
+                "content": assistant_message.content or ""
+            }
+            
+            # Add the assistant's message to chat history
+            chat_history.append(assistant_dict)
+            
+            # Return the assistant's message
+            return None, assistant_message.content, chat_history
     
     def _extract_short_intent(self, message, function_name):
         """Extract a short intent from the assistant's message"""
@@ -263,7 +323,8 @@ class ChatAssistant:
             "get_versions": "Fetching version history...",
             "get_model_views": "Retrieving model views...",
             "get_view_properties": "Fetching view properties...",
-            "get_view_objects": "Retrieving object hierarchy..."
+            "get_view_objects": "Retrieving object hierarchy...",
+            "create_schedule": "Creating schedule..."
         }
         
         # Try to extract a short intent from the message
@@ -314,6 +375,10 @@ class ChatAssistant:
                 version_urn = function_args["version_urn"]
                 view_guid = function_args["view_guid"]
                 return self.api_helper.get_view_objects(version_urn, view_guid)
+            elif function_name == "create_schedule":
+                schedule_type = function_args["schedule_type"]
+                properties = function_args.get("properties")
+                return create_schedule(schedule_type, properties)
             else:
                 return {"error": f"Unknown function: {function_name}"}
         except Exception as e:
@@ -399,4 +464,9 @@ with st.sidebar:
     - Get model views for version urn:adsk.wipprod:fs.file:vf.abc123
     - Show properties for view guid123 in version urn:adsk.wipprod:fs.file:vf.abc123
     - Get object hierarchy for view guid123 in version urn:adsk.wipprod:fs.file:vf.abc123
+    
+    You can also create schedules:
+    - Create a wall schedule
+    - Show me a schedule of electrical devices
+    - Make a table of walls with their properties
     """) 
