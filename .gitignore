@@ -181,14 +181,5 @@ cython_debug/
 /01_DataManagment/logs
 #add logs folder in UI
 /UI/logs
-
-sample_data.json
-test_api.py
-test_openai_logging.py
-test_schedule_creator.py
-test_schedule.py
-test_schedule_with_real_data.py
-
-
-
-
+/UI/data_test
+/01_DataManagment/data_test

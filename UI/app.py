@@ -3,6 +3,7 @@ import sys
 import os
 import json
 from datetime import datetime
+import pandas as pd
 
 # Add the DataManagement directory to the path
 data_mgmt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "01_DataManagment")
@@ -24,6 +25,69 @@ client = get_openai_client()
 
 # Initialize the Autodesk API Helper
 api_helper = AutodeskAPIHelper()
+
+def create_version_graph(versions_data):
+    """
+    Create a simple bar graph visualization of version sizes using Streamlit's native chart functionality.
+    
+    Args:
+        versions_data (dict): The formatted version data from the API
+        
+    Returns:
+        DataFrame: Data for graphing (returned but displayed directly in calling function)
+    """
+    if not versions_data or "error" in versions_data or not versions_data.get("versions"):
+        return None
+    
+    # Extract version information
+    versions = versions_data["versions"]
+    
+    # Create data for the graph
+    data = {
+        'Version': [],
+        'Size (MB)': [],
+        'Created Date': []
+    }
+    
+    # Process the versions
+    for version in versions:
+        version_number = version.get("version_number", 0)
+        data['Version'].append(f"V{version_number}")
+        
+        # Extract numeric size from formatted string (e.g. "37.84 MB" -> 37.84)
+        size_str = version.get("storage_size", "0 B")
+        try:
+            size_val = float(size_str.split()[0])
+            size_unit = size_str.split()[1]
+            # Convert all to MB for consistency if needed
+            if size_unit == "GB":
+                size_val *= 1024
+            elif size_unit == "KB":
+                size_val /= 1024
+            elif size_unit == "B":
+                size_val /= (1024*1024)
+        except (ValueError, IndexError):
+            size_val = 0
+            
+        data['Size (MB)'].append(size_val)
+        
+        # Get the date
+        date_str = version.get("created_date", "Unknown")
+        if date_str and date_str != "Unknown":
+            try:
+                # Just get the date part without time
+                date_only = date_str.split()[0]
+                data['Created Date'].append(date_only)
+            except:
+                data['Created Date'].append("Unknown")
+        else:
+            data['Created Date'].append("Unknown")
+    
+    # Create a DataFrame from the data dictionary
+    df = pd.DataFrame(data)
+    
+    # Return the DataFrame for display in the calling function
+    return df
 
 # Set up page configuration
 st.set_page_config(
@@ -348,6 +412,9 @@ class ChatAssistant:
     def execute_function(self, function_name, function_args):
         """Execute a function and return the result"""
         try:
+            # Store the function name being executed
+            st.session_state.last_function_called = function_name
+            
             if function_name == "get_hubs":
                 return self.api_helper.get_hubs()
             elif function_name == "get_projects":
@@ -363,7 +430,14 @@ class ChatAssistant:
             elif function_name == "get_versions":
                 project_id = function_args["project_id"]
                 item_id = function_args["item_id"]
-                return self.api_helper.get_versions(project_id, item_id)
+                result = self.api_helper.get_versions(project_id, item_id)
+                
+                # Store the version result for potential graphing
+                if "error" not in result and result.get("versions"):
+                    # Store in session state for later use
+                    st.session_state.last_versions_data = result
+                
+                return result
             elif function_name == "get_model_views":
                 version_urn = function_args["version_urn"]
                 return self.api_helper.get_model_views(version_urn)
@@ -393,6 +467,12 @@ if "messages" not in st.session_state:
     
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = None
+    
+if "last_versions_data" not in st.session_state:
+    st.session_state.last_versions_data = None
+    
+if "last_function_called" not in st.session_state:
+    st.session_state.last_function_called = None
 
 # Set up the Streamlit UI
 st.title("Autodesk Data Management Assistant")
@@ -441,6 +521,24 @@ if prompt:
             
             # Update the placeholder with the final response
             message_placeholder.markdown(response)
+            
+            # If versions data is available and get_versions was the last function called, display the graph
+            if (st.session_state.get("last_versions_data") and 
+                st.session_state.get("last_function_called") == "get_versions"):
+                with st.expander("Version Size and Timeline Visualization", expanded=True):
+                    df = create_version_graph(st.session_state.last_versions_data)
+                    if df is not None:
+                        # Display the size data as a bar chart
+                        st.subheader("File Sizes by Version")
+                        # Set the Version column as index for the chart
+                        chart_df = df.set_index('Version')
+                        st.bar_chart(chart_df['Size (MB)'])
+                        
+                        # Show the version timeline as a simple table
+                        st.subheader("Version Timeline")
+                        st.dataframe(df[['Version', 'Created Date']], hide_index=True)
+                    else:
+                        st.warning("No version data available to display in the graph.")
             
             # Add assistant message to chat history
             st.session_state.messages.append({"role": "assistant", "content": response})
