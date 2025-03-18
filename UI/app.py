@@ -4,6 +4,7 @@ import os
 import json
 from datetime import datetime
 import pandas as pd
+import altair as alt
 
 # Add the DataManagement directory to the path
 data_mgmt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "01_DataManagment")
@@ -88,6 +89,125 @@ def create_version_graph(versions_data):
     
     # Return the DataFrame for display in the calling function
     return df
+
+def create_object_hierarchy_graph(objects_data):
+    """
+    Create a visualization of object hierarchy from a model view.
+    
+    Args:
+        objects_data (dict): The formatted object data from the API
+        
+    Returns:
+        DataFrame: Data for graphing (returned but displayed directly in calling function)
+    """
+    if not objects_data or "error" in objects_data:
+        return None
+    
+    # Extract the object hierarchy - check both the new format and old format
+    # The structure could be either directly in objects_data["objects"] 
+    # or in objects_data["objects"]["data"]["objects"]
+    object_hierarchy = None
+    
+    if "objects" in objects_data:
+        if isinstance(objects_data["objects"], dict) and "data" in objects_data["objects"]:
+            # New format: {"objects": {"data": {"type": "objects", "objects": [...]}}}
+            object_hierarchy = objects_data["objects"]["data"]
+        else:
+            # Old format: {"objects": {...}}
+            object_hierarchy = objects_data["objects"]
+    
+    if not object_hierarchy or "objects" not in object_hierarchy:
+        return None
+    
+    # This will store our processed data
+    categories = []
+    parents = []
+    types = []
+    counts = []
+    
+    # Process the hierarchy recursively
+    def process_hierarchy(node, category=None, parent=None, depth=0):
+        if not node:
+            return
+            
+        # Process a dictionary
+        if isinstance(node, dict):
+            # Get the name of current node
+            current_name = node.get('name', 'Unknown')
+            
+            # If this is a top-level category (depth=0)
+            if depth == 0:
+                category = current_name
+                # Process children
+                for child in node.get('objects', []):
+                    process_hierarchy(child, category, None, depth+1)
+            
+            # Second level - typically a parent type like "Basic Wall" or "Pipe Types"
+            elif depth == 1:
+                parent = current_name
+                # Process children
+                for child in node.get('objects', []):
+                    process_hierarchy(child, category, parent, depth+1)
+            
+            # Third level - typically a specific type
+            elif depth == 2:
+                type_name = current_name
+                
+                # Get all leaf objects (actual final nodes)
+                leaf_objects = []
+                
+                # Function to recursively collect all leaf objects
+                def collect_leaf_objects(obj_list):
+                    leaf_count = 0
+                    for item in obj_list:
+                        if isinstance(item, dict):
+                            # If this is a node with name that looks like "Basic Wall [1200268]"
+                            # it's a leaf node regardless of whether it has objects
+                            if 'name' in item and '[' in item.get('name', ''):
+                                leaf_count += 1
+                            # Otherwise, if it has objects, process them recursively
+                            elif 'objects' in item and item['objects']:
+                                leaf_count += collect_leaf_objects(item['objects'])
+                            # If it has a name but no objects, it might still be a leaf node
+                            elif 'name' in item and 'objects' not in item:
+                                leaf_count += 1
+                    return leaf_count
+                
+                leaf_count = collect_leaf_objects(node.get('objects', []))
+                
+                if leaf_count > 0:
+                    categories.append(category)
+                    parents.append(parent)
+                    types.append(type_name)
+                    counts.append(leaf_count)
+        
+        # If we have a list of objects
+        elif isinstance(node, list):
+            for item in node:
+                process_hierarchy(item, category, parent, depth)
+    
+    # Start processing from the root of the hierarchy
+    # The JSON structure is: {"data":{"type":"objects","objects":[{"objectid":1,"objects":[...]}]}}
+    root_objects = object_hierarchy.get('objects', [])
+    if len(root_objects) > 0:
+        for root_obj in root_objects:
+            process_hierarchy(root_obj, None, None, 0)
+    
+    # Create a DataFrame
+    if categories:
+        df = pd.DataFrame({
+            'Category': categories,
+            'Parent': parents,
+            'Type': types,
+            'Count': counts
+        })
+        
+        # Sort by Category and Count (descending)
+        df = df.sort_values(['Category', 'Count'], ascending=[True, False])
+        
+        return df
+    
+    return None
 
 # Set up page configuration
 st.set_page_config(
@@ -448,7 +568,14 @@ class ChatAssistant:
             elif function_name == "get_view_objects":
                 version_urn = function_args["version_urn"]
                 view_guid = function_args["view_guid"]
-                return self.api_helper.get_view_objects(version_urn, view_guid)
+                result = self.api_helper.get_view_objects(version_urn, view_guid)
+                
+                # Store the objects result for visualization
+                if "error" not in result and result.get("objects"):
+                    # Store in session state for later use
+                    st.session_state.last_objects_data = result
+                
+                return result
             elif function_name == "create_schedule":
                 schedule_type = function_args["schedule_type"]
                 properties = function_args.get("properties")
@@ -539,6 +666,59 @@ if prompt:
                         st.dataframe(df[['Version', 'Created Date']], hide_index=True)
                     else:
                         st.warning("No version data available to display in the graph.")
+            
+            # If objects data is available and get_view_objects was the last function called, display the visualization
+            if (st.session_state.get("last_objects_data") and 
+                st.session_state.get("last_function_called") == "get_view_objects"):
+                with st.expander("Object Hierarchy Visualization", expanded=True):
+                    df = create_object_hierarchy_graph(st.session_state.last_objects_data)
+                    if df is not None:
+                        # Display summary info
+                        total_objects = st.session_state.last_objects_data.get("object_count", 0)
+                        if total_objects == 0 and df is not None:
+                            # Calculate total from the dataframe if object_count is missing
+                            total_objects = df['Count'].sum()
+                        
+                        st.subheader(f"Object Counts by Type (Total: {total_objects})")
+                        
+                        # Create a more advanced chart with hover functionality
+                        # First, determine if we need to facet by category based on number of types
+                        unique_categories = df['Category'].nunique()
+                        
+                        if unique_categories > 1:
+                            # Create a faceted chart grouped by Category
+                            chart = alt.Chart(df).mark_bar().encode(
+                                x=alt.X('Type:N', sort='-y', title="Object Type", axis=alt.Axis(labelLimit=150, labelAngle=45)),
+                                y=alt.Y('Count:Q', title="Number of Objects"),
+                                color=alt.Color('Parent:N', title="Parent Type"),
+                                tooltip=['Category', 'Parent', 'Type', 'Count']
+                            ).properties(
+                                height=300,
+                                title="Number of Objects by Type"
+                            ).facet(
+                                facet='Category:N',
+                                columns=1
+                            )
+                        else:
+                            # Simple chart for a single category
+                            chart = alt.Chart(df).mark_bar().encode(
+                                x=alt.X('Type:N', sort='-y', title="Object Type", axis=alt.Axis(labelLimit=150, labelAngle=45)),
+                                y=alt.Y('Count:Q', title="Number of Objects"),
+                                color=alt.Color('Parent:N', title="Parent Type"),
+                                tooltip=['Category', 'Parent', 'Type', 'Count']
+                            ).properties(
+                                height=400,
+                                title="Number of Objects by Type"
+                            )
+                        
+                        # Display the chart
+                        st.altair_chart(chart, use_container_width=True)
+                        
+                        # Show the detailed breakdown as a table
+                        st.subheader("Detailed Object Breakdown")
+                        st.dataframe(df, hide_index=True)
+                    else:
+                        st.warning("No object data available to display in the visualization.")
             
             # Add assistant message to chat history
             st.session_state.messages.append({"role": "assistant", "content": response})
