@@ -118,7 +118,8 @@ def get_objects_for_schedule(schedule_type, current_state):
                 # Create a summarized version of the object with only essential properties
                 summarized_obj = {
                     "name": obj.get("name", ""),
-                    "objectid": obj.get("objectid", {})
+                    "objectid": obj.get("objectid", {}),  # Keep for internal reference only, will be filtered later
+                    "_internal_only": True  # Mark that this contains internal-only fields
                 }
                 
                 # Extract only the basic properties we need
@@ -236,9 +237,31 @@ def create_smart_schedule(schedule_type, objects, user_query, specified_properti
     sample_size = min(3, len(objects))
     sample_objects = objects[:sample_size]
     
-    # Get a list of all property names from the sample objects to help the LLM
-    property_names = set()
+    # Filter out ID fields from objects before sending to LLM
+    filtered_sample_objects = []
     for obj in sample_objects:
+        filtered_obj = {
+            "name": obj.get("name", "")
+            # Intentionally exclude objectid field
+        }
+        
+        # Filter properties to exclude any ID-related fields
+        filtered_properties = []
+        excluded_property_terms = ["id", "guid", "urn", "objectid", "element id"]
+        
+        for prop in obj.get("properties", []):
+            prop_name = prop.get("name", "").lower()
+            # Skip properties with names containing excluded terms
+            if any(term in prop_name for term in excluded_property_terms):
+                continue
+            filtered_properties.append(prop)
+        
+        filtered_obj["properties"] = filtered_properties
+        filtered_sample_objects.append(filtered_obj)
+    
+    # Get a list of all property names from the filtered sample objects
+    property_names = set()
+    for obj in filtered_sample_objects:
         for prop in obj.get("properties", []):
             if "name" in prop:
                 property_names.add(prop["name"])
@@ -260,7 +283,7 @@ The request is: "{user_query}"
     
     # Add a few sample objects (limited data) to give the LLM context about the structure
     user_content += f"\n\nSample objects ({sample_size} of {len(objects)} total):\n"
-    user_content += json.dumps(sample_objects, indent=2)
+    user_content += json.dumps(filtered_sample_objects, indent=2)
     
     # Clear instructions for response format
     user_content += "\n\nReturn a JSON with 'columns' (array of property names) and 'table' (markdown table string)."
@@ -319,14 +342,40 @@ def build_markdown_table(objects, columns):
     if not objects or not columns:
         return "No data available for table."
     
+    # Filter out columns that might contain IDs
+    excluded_terms = ["id", "guid", "urn", "objectid", "element id"]
+    filtered_columns = []
+    for col in columns:
+        # Skip columns with names containing excluded terms
+        if any(term in col.lower() for term in excluded_terms):
+            continue
+        filtered_columns.append(col)
+    
+    # Use filtered columns
+    if not filtered_columns:
+        # If all columns were filtered out, use a subset of non-ID columns
+        for obj in objects:
+            if "properties" in obj:
+                for prop in obj["properties"]:
+                    prop_name = prop.get("name", "").lower()
+                    if not any(term in prop_name for term in excluded_terms):
+                        if prop.get("name") not in filtered_columns:
+                            filtered_columns.append(prop.get("name"))
+                            if len(filtered_columns) >= 5:  # Limit to 5 properties if all were filtered
+                                break
+    
+    # Ensure we have at least the "name" column
+    if "name" not in filtered_columns and len(filtered_columns) == 0:
+        filtered_columns.append("name")
+    
     # Start building the table
-    table = "| " + " | ".join(columns) + " |\n"
-    table += "| " + " | ".join(["---"] * len(columns)) + " |\n"
+    table = "| " + " | ".join(filtered_columns) + " |\n"
+    table += "| " + " | ".join(["---"] * len(filtered_columns)) + " |\n"
     
     # Add rows
     for obj in objects:
         row = []
-        for col in columns:
+        for col in filtered_columns:
             # Try to find the property in the object
             value = "N/A"
             

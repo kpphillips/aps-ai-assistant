@@ -132,8 +132,13 @@ def create_object_hierarchy_graph(objects_data):
             
         # Process a dictionary
         if isinstance(node, dict):
-            # Get the name of current node
+            # Get the name of current node, strip any IDs that might be in the name
             current_name = node.get('name', 'Unknown')
+            
+            # Remove IDs from names like "Basic Wall [1200268]"
+            if '[' in current_name and ']' in current_name:
+                clean_name = current_name.split('[')[0].strip()
+                current_name = clean_name
             
             # If this is a top-level category (depth=0)
             if depth == 0:
@@ -163,6 +168,7 @@ def create_object_hierarchy_graph(objects_data):
                         if isinstance(item, dict):
                             # If this is a node with name that looks like "Basic Wall [1200268]"
                             # it's a leaf node regardless of whether it has objects
+                            # Note: We look for IDs in brackets to identify but don't expose them
                             if 'name' in item and '[' in item.get('name', ''):
                                 leaf_count += 1
                             # Otherwise, if it has objects, process them recursively
@@ -736,12 +742,12 @@ with st.sidebar:
     
     You can ask questions like:
     - Show me my hubs
-    - List projects in hub abc123
-    - Get items in project xyz789
-    - Show versions of item def456 in project xyz789
-    - Get model views for version urn:adsk.wipprod:fs.file:vf.abc123
-    - Show properties for view guid123 in version urn:adsk.wipprod:fs.file:vf.abc123
-    - Get object hierarchy for view guid123 in version urn:adsk.wipprod:fs.file:vf.abc123
+    - List projects in a specific hub
+    - Get items in a project
+    - Show versions of a specific file
+    - Get model views for a file version
+    - Show properties for a specific view in a version
+    - Get object hierarchy for a specific view
     
     You can also create schedules:
     - Create a wall schedule
