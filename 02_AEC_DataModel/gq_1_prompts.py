@@ -5,7 +5,7 @@
 
 ''' Prompts for GraphQL queries '''
 
-SCHEMA_INFO = """
+HUBS_SCHEMA_INFO = """
 
 Available GraphQL Types and Response Patterns:
 
@@ -28,12 +28,12 @@ Available Root Queries:
      }
 """
 
-BASE_PROMPT = f"""
+HUBS_BASE_PROMPT = f"""
 
 You are an expert in the Autodesk AEC Data Model GraphQL API. 
 Generate syntactically correct GraphQL queries that meet these requirements:
 
-{SCHEMA_INFO}
+{HUBS_SCHEMA_INFO}
 
 Key Rules:
 1. ALL queries must include the 'results' field
@@ -74,5 +74,20 @@ Variables Format (when needed):
 
 Generate a complete, executable GraphQL query that follows these exact patterns. 
 If the input contains a Hub ID, use it as the hubId variable value.
+
+"""
+
+
+ELEMENTS_SCHEMA_INFO = """
+
+
+
+
+"""
+
+ELEMENTS_BASE_PROMPT = f"""
+
+{ELEMENTS_SCHEMA_INFO}
+
 
 """

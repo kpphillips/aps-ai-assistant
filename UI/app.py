@@ -742,15 +742,13 @@ with st.sidebar:
     
     You can ask questions like:
     - Show me my hubs
-    - List projects in a specific hub
-    - Get items in a project
-    - Show versions of a specific file
-    - Get model views for a file version
-    - Show properties for a specific view in a version
-    - Get object hierarchy for a specific view
+    - List projects by Prefix in a Hub
+    - Get files in a project
+    - Show versions of a file
+    - Get model views for a file
+    - Get objects hierarchy for a view
     
-    You can also create schedules:
-    - Create a wall schedule
-    - Show me a schedule of electrical devices
-    - Make a table of walls with their properties
+    Built in Schedule view:
+    - Shows Version History/Details
+    - Shows Object Counts by Type
     """) 

@@ -851,6 +851,7 @@ class AutodeskAPIHelper:
 _api_helper = AutodeskAPIHelper()
 
 # For backward compatibility, expose the methods as module-level functions
+
 def get_hubs():
     return _api_helper.get_hubs()
 
