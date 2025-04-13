@@ -2,7 +2,9 @@
 
 
 
-''' Main script for GraphQL queries '''
+''' Main script for GraphQL queries 
+    https://aecdatamodel-explorer.autodesk.io/
+'''
 import os
 import requests
 from dotenv import load_dotenv
@@ -48,8 +50,16 @@ def generate_graphql_query(natural_language_query: str) -> str:
     return response.choices[0].message.content.strip()
 
 def main():
-    natural_language_query = '''find me the projects in this hub: 
-    urn:adsk.ace:prod.scope:ca33a0c0-9108-4ed9-a15f-3f86de705f15'''
+    
+    # Get hub ID from environment variables
+    hub_id = os.environ.get("APS_GQ_SAMPLE_HUB_ID")
+    if not hub_id:
+        print("WARNING: APS_GQ_SAMPLE_HUB_ID not set in .env")
+        hub_id = "PLACEHOLDER_HUB_ID"
+    
+    natural_language_query = f"""find me the projects in this hub: 
+    {hub_id}"""
+    
     graphql_query = generate_graphql_query(natural_language_query)
     
     print(f"\nGenerated GraphQL Query:\n{graphql_query}")

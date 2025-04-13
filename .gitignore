@@ -183,3 +183,7 @@ cython_debug/
 /UI/logs
 /UI/data_test
 /01_DataManagment/data_test
+aec_queries.md
+.vscode
+/logs
+logs

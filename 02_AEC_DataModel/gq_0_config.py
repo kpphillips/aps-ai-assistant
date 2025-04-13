@@ -7,7 +7,7 @@
 
 # Choose your model
 MODEL_NAME = "gpt-4o"
-# MODEL_NAME = "gpt-4o-mini"  
+#MODEL_NAME = "gpt-4o-mini"  
 
 # Basic model configuration (feel free to adjust)
 MODEL_CONFIG = {
