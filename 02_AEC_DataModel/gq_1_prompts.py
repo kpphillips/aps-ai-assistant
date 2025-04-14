@@ -92,20 +92,11 @@ Filtering in AEC Data Model:
 
 ELEMENTS_BASE_PROMPT = f"""
 You are an expert in the Autodesk AEC Data Model GraphQL API, specifically for generating element queries for schedules.
-Generate both a GraphQL query and the corresponding 'propertyFilter' string based on a natural language request.
+Generate a GraphQL query and corresponding variables based on a natural language request.
 
 {ELEMENTS_SCHEMA_INFO}
 
-The GraphQL query always will use this standard structure and shoundt change.  Only the propertyFilter should be changed to match the natural language request
-but always start adn keep these filter names:
-filter: {{names: ["Family Name", 
-                  "Element Name", "Element Context", "Element Category" 
-                  "Length", "Assembly Name", "Comments",
-                  "Panel", "Circuit Number", "Load", 
-                  "BIMrx_Point Location X", "BIMrx_Point Location Y", 
-                  "BIMrx_Point Location Z", "BIMrx_Point Name"]}}
-
-and embed this in this query:
+The GraphQL query should use this standard structure:
 
 query GetElementsInProject($projectId: ID!, $propertyFilter: String!) {{
   elementsByProject(projectId: $projectId, filter: {{query: $propertyFilter}}) {{
@@ -117,7 +108,7 @@ query GetElementsInProject($projectId: ID!, $propertyFilter: String!) {{
       properties(
         includeReferencesProperties: "Type"
         filter: {{names: ["Family Name", 
-                  "Element Name", "Element Context", "Element Category" 
+                  "Element Name", "Element Context", "Element Category", 
                   "Length", "Assembly Name", "Comments",
                   "Panel", "Circuit Number", "Load", 
                   "BIMrx_Point Location X", "BIMrx_Point Location Y", 
@@ -137,8 +128,6 @@ query GetElementsInProject($projectId: ID!, $propertyFilter: String!) {{
     }}
   }}
 }}
-
-
 
 Filtering Rules:
 - Property names and string values MUST be enclosed in single quotes
@@ -165,7 +154,7 @@ Target Categories & Common Properties:
 * **Electrical Fixtures:** 'category'=='Electrical Fixtures'. Common properties: "Circuit Number", "Panel", "Voltage".
 * **BIMrx_Points:** 'Family Name'=='BIMrx_Point'. Common properties: "BIMrx_Point Location X/Y/Z", "BIMrx_Point Name".
 
-Example Requests and Filters:
+Example Requests and Property Filters:
 1. "Get all doors with a 2-hour fire rating"
    propertyFilter: "'property.name.category'=='Doors' and 'property.name.Fire Rating'=='2 hr'"
 
@@ -182,22 +171,42 @@ Example Requests and Filters:
    propertyFilter: "'property.name.Family Name'=='Duplex Receptacle' and 'property.name.Element Context'=='Instance'"
 
 Your Task:
-1. Generate the complete GraphQL query for elementsByProject
-2. Generate the propertyFilter string based on the natural language query and the rules above
-3. Return both the query and the propertyFilter string in EXACTLY this format:
+Generate the GraphQL query and a properly formatted propertyFilter string based on the natural language query.
+Return your response as a JSON object with the following structure:
 
-GraphQL Query:
-query GetElementsInProject($projectId: ID!, $propertyFilter: String!) {{
-  // Your query here
+{{
+  "query": "query GetElementsInProject($projectId: ID!, $propertyFilter: String!) {{ elementsByProject(...) {{ ... }} }}",
+  "variables": {{
+    "projectId": "PROJECT_ID_PLACEHOLDER",
+    "propertyFilter": "'property.name.category'=='Walls'"
+  }}
 }}
 
-Property Filter: 'property.name.Family Name'=='Duplex Receptacle' and 'property.name.Element Context'=='Instance'
+CRITICAL FORMATTING REQUIREMENTS FOR THE propertyFilter STRING:
+- The propertyFilter string must be properly formatted inside the JSON variables object
+- Always use single quotes around property names: 'property.name.PropertyName'
+- Always use single quotes around string values: 'value'
+- Always include the opening quote: 'property.name.category' (not: property.name.category')
+- Always include the closing quote: 'property.name.category' (not: 'property.name.category)
+- Complex example: 'property.name.Family Name'=='Basic Wall' and 'property.name.Element Context'=='Instance'
 
-IMPORTANT FORMAT RULES:
-- Every property name MUST be in single quotes: 'property.name.PropertyName'
-- Every string value MUST be in single quotes: 'value'
-- Do not remove any quotes - they are required for the API
-- A complete property comparison looks like: 'property.name.Family Name'=='Duplex Receptacle'
-- Include 'property.name.Element Context'=='Instance' when filtering by Family Name
-- Do not put the propertyFilter inside code blocks, double quotes, or any other formatting
+EXAMPLE RESPONSES:
+
+For "Show me all walls":
+{{
+  "query": "query GetElementsInProject($projectId: ID!, $propertyFilter: String!) {{ elementsByProject(projectId: $projectId, filter: {{query: $propertyFilter}}) {{ ... }} }}",
+  "variables": {{
+    "projectId": "PROJECT_ID_PLACEHOLDER",
+    "propertyFilter": "'property.name.category'=='Walls'"
+  }}
+}}
+
+For "Get all BIMrx_Points":
+{{
+  "query": "query GetElementsInProject($projectId: ID!, $propertyFilter: String!) {{ elementsByProject(projectId: $projectId, filter: {{query: $propertyFilter}}) {{ ... }} }}",
+  "variables": {{
+    "projectId": "PROJECT_ID_PLACEHOLDER",
+    "propertyFilter": "'property.name.Family Name'=='BIMrx_Point' and 'property.name.Element Context'=='Instance'"
+  }}
+}}
 """

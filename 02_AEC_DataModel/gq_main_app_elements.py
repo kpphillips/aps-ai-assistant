@@ -26,18 +26,32 @@ if not APS_AUTH_TOKEN:
     exit(1)
 # endregion
 
-def generate_graphql_query(natural_language_query: str) -> dict:
+def generate_graphql_query(natural_language_query: str, project_id: str = None) -> dict:
     """
     Generate a GraphQL query for element data based on a natural language description.
-    Returns both the query and the property filter string.
+    Returns the query, variables dictionary, and property filter string.
+    
+    Args:
+        natural_language_query (str): Natural language description of the elements to query
+        project_id (str, optional): Project ID to include in the query or prompt. Defaults to None.
+    
+    Returns:
+        dict: Dictionary containing the generated query, variables dictionary, property filter, and full response
     """
+    # Use the project ID in the prompt if provided
+    if project_id:
+        prompt = f"{ELEMENTS_BASE_PROMPT}\nNatural Language Query: {natural_language_query}\nProject ID: {project_id}"
+    else:
+        prompt = f"{ELEMENTS_BASE_PROMPT}\nNatural Language Query: {natural_language_query}"
+    
     client = get_openai_client()
     response = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[{
             "role": "user", 
-            "content": f"{ELEMENTS_BASE_PROMPT}\nNatural Language Query: {natural_language_query}\nPlease return the GraphQL query and property filter as separate sections clearly labeled."
+            "content": prompt
         }],
+        response_format={"type": "json_object"},
         **MODEL_CONFIG
     )
     
@@ -55,125 +69,42 @@ def generate_graphql_query(natural_language_query: str) -> dict:
     print("\nFull LLM Response:")
     print(content)
     
-    # Parse the response to extract both the query and the property filter
+    # Parse the JSON response
     try:
-        query = None
-        property_filter = None
+        data = json.loads(content)
         
-        # Extract query - look for GraphQL or code blocks
-        if "```graphql" in content:
-            query_parts = content.split("```graphql")
-            if len(query_parts) > 1:
-                query_content = query_parts[1].split("```")[0].strip()
-                query = query_content
-        elif "```" in content:
-            # Find all code blocks
-            code_blocks = []
-            parts = content.split("```")
-            for i in range(1, len(parts), 2):
-                if i < len(parts):
-                    code_blocks.append(parts[i].strip())
-            
-            # The first code block is likely the query if it contains "elementsByProject"
-            for block in code_blocks:
-                if "elementsByProject" in block:
-                    query = block
-                    break
+        # Extract the query and variables
+        query = data.get("query")
+        variables = data.get("variables", {})
+        property_filter = variables.get("propertyFilter")
         
-        # For property filter, look specifically for sections labeled as such
-        property_filter_indicators = [
-            "Property Filter:", 
-            "propertyFilter:", 
-            "Filter String:", 
-            "Property Filter String:",
-            "### Property Filter:"
-        ]
-        
-        for indicator in property_filter_indicators:
-            if indicator in content:
-                lines = content.split('\n')
-                for i, line in enumerate(lines):
-                    if indicator in line:
-                        # Check if the filter is on this line
-                        if ":" in line:
-                            # Get everything after the colon
-                            filter_value = line.split(":", 1)[1].strip()
-                            # Only strip outer double quotes, commas, or other syntax, but preserve single quotes around properties
-                            filter_value = filter_value.strip('"').strip(",").strip()
-                            if "==" in filter_value or "contains" in filter_value:
-                                property_filter = filter_value
-                                break
-                        
-                        # If not on this line, check the next lines
-                        # Look at up to 3 lines after the indicator in case there's markdown or code blocks
-                        for j in range(1, 4):
-                            if i + j < len(lines) and len(lines[i+j].strip()) > 0:
-                                filter_value = lines[i+j].strip()
-                                # Check if this is a code block starter
-                                if filter_value.startswith("```"):
-                                    # If it's a code block, look for the next non-empty line
-                                    if i + j + 1 < len(lines) and len(lines[i+j+1].strip()) > 0:
-                                        filter_value = lines[i+j+1].strip()
-                                
-                                # Clean up markdown and code blocks but preserve single quotes
-                                filter_value = filter_value.strip('"').strip(",").strip()
-                                filter_value = filter_value.replace("```plaintext", "").replace("```", "")
-                                
-                                if "==" in filter_value or "contains" in filter_value:
-                                    property_filter = filter_value
-                                    break
-                        
-                        if property_filter:
-                            break
-
-        # If still no property filter, try to extract from plain text by looking for pattern
-        if property_filter is None:
-            # Look for quoted property name patterns - match complete filter expressions with and/or
-            pattern = r"'property\.name\.[^']+'.*?==.*?(?:and|or|$)"
-            matches = re.findall(pattern, content)
-            if matches:
-                # Join any matches that look like they should be together
-                full_filter = " ".join(matches)
-                if "==" in full_filter:
-                    property_filter = full_filter
-            else:
-                # Try looking for individual property expressions
-                pattern = r"'property\.name\.[^']+'.+?==.+?'"
-                matches = re.findall(pattern, content)
-                if matches:
-                    for match in matches:
-                        if "==" in match:
-                            property_filter = match
-                            break
-        
-        # Validate property filter before returning
-        if property_filter:
-            # Check for invalid content
-            if "String" in property_filter or "{" in property_filter:
-                # This doesn't look like a valid filter string
-                print("WARNING: Extracted property filter appears invalid: " + property_filter)
-                property_filter = None
-            
-            # Check for proper quote format
-            elif "'property.name." not in property_filter:
-                print("WARNING: Property filter missing proper quotes: " + property_filter)
-                # Try to fix missing quotes
-                property_filter = property_filter.replace("property.name.", "'property.name.").replace(" == ", "'=='").replace(" and ", "' and ")
-                if not property_filter.endswith("'"):
-                    property_filter += "'"
-                print("FIXED TO: " + property_filter)
+        # If the project_id was provided, update it in the variables
+        if project_id and "projectId" in variables:
+            variables["projectId"] = project_id
         
         return {
             "query": query,
+            "variables": variables,
             "property_filter": property_filter,
             "full_response": content
         }
-    except Exception as e:
-        print(f"Error parsing response: {e}")
+    except json.JSONDecodeError as e:
+        print(f"Error parsing JSON response: {e}")
         return {
             "query": None,
+            "variables": {},
             "property_filter": None,
-            "full_response": content
+            "full_response": content,
+            "error": f"Failed to parse JSON response: {str(e)}"
+        }
+    except Exception as e:
+        print(f"Unexpected error processing response: {e}")
+        return {
+            "query": None,
+            "variables": {},
+            "property_filter": None,
+            "full_response": content,
+            "error": f"Unexpected error: {str(e)}"
         }
 
 def call_aps_api(query: str, variables: dict) -> dict:
@@ -191,8 +122,46 @@ def call_aps_api(query: str, variables: dict) -> dict:
     print("\nCalling APS API with payload:")
     print(json.dumps(payload, indent=2))
     
-    response = requests.post(endpoint, json=payload, headers=headers)
-    return response.json()
+    try:
+        response = requests.post(endpoint, json=payload, headers=headers)
+        
+        # Log the status code
+        print(f"\nAPI Response Status: {response.status_code}")
+        
+        # Check for authentication errors
+        if response.status_code == 401:
+            error_msg = "Authentication Error: Invalid or expired token"
+            print(f"\n{error_msg}")
+            return {"error": error_msg, "status_code": 401}
+        
+        # Check for other error status codes
+        elif response.status_code != 200:
+            error_msg = f"API Error: {response.status_code} - {response.text}"
+            print(f"\n{error_msg}")
+            return {"error": error_msg, "status_code": response.status_code}
+        
+        # Parse JSON response
+        json_response = response.json()
+        
+        # Check for GraphQL errors
+        if "errors" in json_response:
+            print("\nGraphQL Errors:")
+            print(json.dumps(json_response["errors"], indent=2))
+        
+        return json_response
+    
+    except requests.exceptions.RequestException as e:
+        error_msg = f"Request Error: {str(e)}"
+        print(f"\n{error_msg}")
+        return {"error": error_msg}
+    except json.JSONDecodeError as e:
+        error_msg = f"JSON Decode Error: {str(e)}"
+        print(f"\n{error_msg}")
+        return {"error": error_msg}
+    except Exception as e:
+        error_msg = f"Unexpected Error: {str(e)}"
+        print(f"\n{error_msg}")
+        return {"error": error_msg}
 
 def main():
     # Get project ID from environment variables
@@ -206,10 +175,13 @@ def main():
     in project {project_id}.
     """
     
-    result = generate_graphql_query(natural_language_query)
+    result = generate_graphql_query(natural_language_query, project_id)
     
     print("\nGenerated GraphQL Query:")
     print(result["query"])
+    
+    print("\nGenerated Variables:")
+    print(json.dumps(result["variables"], indent=2))
     
     print("\nGenerated Property Filter:")
     print(result["property_filter"])
@@ -217,6 +189,10 @@ def main():
     # Validate results before calling the API
     valid_query = result["query"] and "elementsByProject" in result["query"]
     valid_filter = result["property_filter"] and ("==" in result["property_filter"] or "contains" in result["property_filter"])
+    
+    if "error" in result:
+        print("\nERROR:", result["error"])
+        return
     
     if not valid_query:
         print("\nERROR: Generated query is invalid or missing")
@@ -228,11 +204,8 @@ def main():
         print("Please try a different natural language query")
         return
     
-    # If we have both a valid query and property filter, call the API
-    variables = {
-        "projectId": project_id,
-        "propertyFilter": result["property_filter"]
-    }
+    # Directly use the variables dictionary from the result
+    variables = result["variables"]
     
     print("\nVariables:")
     print(json.dumps(variables, indent=2))
