@@ -187,3 +187,4 @@ aec_queries.md
 .vscode
 /logs
 logs
+.DS_Store

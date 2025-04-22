@@ -18,13 +18,7 @@ This project demonstrates various approaches to using AI/LLMs for interacting wi
 pip install -r requirements.txt
 ```
 
-2. Ensure your `.env` file is set up correctly with the following variables:
-
-```
-OPENAI_API_KEY=your_openai_api_key
-APS_AUTH_TOKEN=your_aps_auth_token
-OPENAI_LOG_API_REQUESTS=true  # Set to 'false' to disable logging
-```
+2. Ensure your `.env` file is set up correctly by copying the .env.example file and saving it as .env:
 
 ## Running the UI
 
@@ -82,3 +76,15 @@ python 01_DataManagment/test_openai_logging.py
 - `openai_service.py`: Provides a wrapper around the OpenAI client with logging
 - `dm_3_helpers.py`: Contains helper functions for the Data Management API
 - `schedule_creator.py`: Contains functions for creating schedules from model data 
+
+## Disclaimer
+
+This project is an independent demonstration of Autodesk Platform Services (APS) APIs and is not officially endorsed, sponsored, or affiliated with Autodesk, Inc. It is provided "as is" without warranty of any kind, express or implied.
+
+Users are responsible for:
+- Obtaining their own valid APS credentials
+- Complying with Autodesk's terms of service
+- Ensuring proper data security and privacy practices
+- Using this code in accordance with applicable laws and regulations
+
+The authors and contributors assume no liability for any damages or losses arising from the use of this software.
